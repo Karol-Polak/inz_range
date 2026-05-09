@@ -1,6 +1,18 @@
+import sys
+
+from PyQt6.QtWidgets import QApplication
+
+from view.main_window import MainWindow
+
+
 def main():
-    # Start aplikacji (GUI będzie dodane później)
-    pass
+    app = QApplication(sys.argv)
+    app.setApplicationName("Inz Range")
+
+    window = MainWindow()
+    window.show()
+
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
