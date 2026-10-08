@@ -21,6 +21,9 @@ from services.analysis_overlay import draw_analysis_overlay
 from view.statistics_page import StatisticsPage
 from view.settings_page import SettingsPage
 
+from database.models import TrainingSession
+from database.repository import save_training_session
+
 
 class _NavItem(QFrame):
     """Custom nav item: QFrame + two QLabels. No QPushButton height constraints."""
@@ -80,7 +83,7 @@ class _NavItem(QFrame):
     def enterEvent(self, event):
         if not self._checked:
             self.setStyleSheet(
-                "background: #223040; border: 1px solid #2d4054; border-radius: 8px;"
+                "background: #1f2226; border: 1px solid #34383d; border-radius: 8px;"
             )
         super().enterEvent(event)
 
@@ -550,8 +553,8 @@ class MainWindow(QMainWindow):
             }
 
             #sidebar {
-                background: #17202a;
-                border-right: 1px solid #101820;
+                background: #111315;
+                border-right: 1px solid #1c1f23;
             }
 
             #appTitle {
@@ -592,9 +595,9 @@ class MainWindow(QMainWindow):
             }
 
             #statusBadge {
-                color: #24635f;
-                background: #dcefed;
-                border: 1px solid #bddbd8;
+                color: #d6d9dd;
+                background: #2b2f34;
+                border: 1px solid #3a3f45;
                 border-radius: 8px;
                 padding: 8px 12px;
                 font-size: 12px;
@@ -634,12 +637,12 @@ class MainWindow(QMainWindow):
 
             #primaryButton {
                 color: #ffffff;
-                background: #2f6f73;
-                border: 1px solid #285f63;
-            }
+                background: #2b2f34;
+                border: 1px solid #3b4046;
+}
 
             #primaryButton:hover {
-                background: #398287;
+                background: #3a3f45;
             }
 
             #secondaryButton {
