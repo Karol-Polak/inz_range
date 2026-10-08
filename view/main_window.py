@@ -3,10 +3,12 @@ import cv2
 
 from PyQt6.QtGui import QAction, QFont, QImage, QPixmap
 from PyQt6.QtWidgets import (
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -18,11 +20,30 @@ from PyQt6.QtWidgets import (
 
 from controller.main_controller import AnalysisError, analyze_image
 from services.analysis_overlay import draw_analysis_overlay
+from services.manual_correction import map_display_point_to_image, toggle_hit_at
+from services.statistics import calculate_statistics
 from view.statistics_page import StatisticsPage
 from view.settings_page import SettingsPage
+from view.sessions_page import SessionsPage
 
-from database.models import TrainingSession
-from database.repository import save_training_session
+from database.repository import save_session
+
+
+class _ClickableImageLabel(QLabel):
+    """QLabel that reports click positions, used for manual hit correction."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._click_callback = None
+
+    def set_click_callback(self, callback):
+        self._click_callback = callback
+
+    def mousePressEvent(self, event):
+        if self._click_callback:
+            position = event.position()
+            self._click_callback(position.x(), position.y())
+        super().mousePressEvent(event)
 
 
 class _NavItem(QFrame):
@@ -117,6 +138,7 @@ class MainWindow(QMainWindow):
         self.original_preview_pixmap = None
         self.current_session = None
         self.stat_value_labels = {}
+        self.correction_mode_enabled = False
 
         self._create_actions()
         self._build_layout()
@@ -206,10 +228,10 @@ class MainWindow(QMainWindow):
         self.statistics_page = StatisticsPage()
         self.pages.addWidget(self.statistics_page)
 
-        self.pages.addWidget(self._build_placeholder_page(
-            "Sesje treningowe",
-            "Tutaj bedzie lista zapisanych analiz oraz porownywanie wynikow z roznych dni.",
-        ))
+        # --- Real Sessions page ---
+        self.sessions_page = SessionsPage(on_session_loaded=self._load_session_into_analysis)
+        self.pages.addWidget(self.sessions_page)
+
         self.settings_page = SettingsPage()
         self.pages.addWidget(self.settings_page)
 
@@ -271,11 +293,12 @@ class MainWindow(QMainWindow):
         title = QLabel("Podglad tarczy")
         title.setObjectName("sectionTitle")
 
-        self.image_preview = QLabel("Wczytaj zdjecie tarczy, aby zobaczyc podglad analizy.")
+        self.image_preview = _ClickableImageLabel("Wczytaj zdjecie tarczy, aby zobaczyc podglad analizy.")
         self.image_preview.setObjectName("imagePreview")
         self.image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_preview.setWordWrap(True)
         self.image_preview.setMinimumHeight(420)
+        self.image_preview.set_click_callback(self._handle_image_click)
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(12)
@@ -291,8 +314,16 @@ class MainWindow(QMainWindow):
         self.analyze_button.setEnabled(False)
         self.analyze_button.clicked.connect(self._analyze_selected_image)
 
+        self.correction_toggle = QPushButton("Koryguj trafienia")
+        self.correction_toggle.setObjectName("secondaryButton")
+        self.correction_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.correction_toggle.setCheckable(True)
+        self.correction_toggle.setEnabled(False)
+        self.correction_toggle.clicked.connect(self._toggle_correction_mode)
+
         toolbar.addWidget(load_button)
         toolbar.addWidget(self.analyze_button)
+        toolbar.addWidget(self.correction_toggle)
         toolbar.addStretch(1)
 
         layout.addWidget(title)
@@ -316,8 +347,8 @@ class MainWindow(QMainWindow):
 
         stats = [
             ("Liczba trafien", "-"),
-            ("Sredni promien", "-"),
-            ("Rozrzut maks.", "-"),
+            ("Celnosc", "-"),
+            ("Precyzja", "-"),
             ("CEP 50%", "-"),
         ]
 
@@ -335,6 +366,8 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
+        layout.addWidget(self._build_save_section())
+
         # Quick-link to statistics page
         goto_stats = QPushButton("Zobacz szczegółowe statystyki →")
         goto_stats.setObjectName("secondaryButton")
@@ -343,6 +376,34 @@ class MainWindow(QMainWindow):
         layout.addWidget(goto_stats)
 
         return panel
+
+    def _build_save_section(self):
+        section = QFrame()
+        section.setObjectName("statRow")
+
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        self.weapon_type_input = QLineEdit()
+        self.weapon_type_input.setPlaceholderText("Rodzaj broni (opcjonalnie)")
+
+        self.distance_input = QDoubleSpinBox()
+        self.distance_input.setRange(0.0, 1000.0)
+        self.distance_input.setSuffix(" m")
+        self.distance_input.setSpecialValueText("Odleglosc (opcjonalnie)")
+
+        self.save_session_button = QPushButton("Zapisz sesje")
+        self.save_session_button.setObjectName("secondaryButton")
+        self.save_session_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_session_button.setEnabled(False)
+        self.save_session_button.clicked.connect(self._save_current_session)
+
+        layout.addWidget(self.weapon_type_input)
+        layout.addWidget(self.distance_input)
+        layout.addWidget(self.save_session_button)
+
+        return section
 
     def _build_stat_row(self, label, value):
         row = QFrame()
@@ -362,27 +423,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(result)
 
         return row, result
-
-    def _build_placeholder_page(self, title, text):
-        page = QFrame()
-        page.setObjectName("placeholderPage")
-
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(10)
-
-        label = QLabel(title)
-        label.setObjectName("placeholderTitle")
-
-        description = QLabel(text)
-        description.setObjectName("placeholderText")
-        description.setWordWrap(True)
-
-        layout.addWidget(label)
-        layout.addWidget(description)
-        layout.addStretch(1)
-
-        return page
 
     def _select_page(self, index):
         self.pages.setCurrentIndex(index)
@@ -413,6 +453,11 @@ class MainWindow(QMainWindow):
         self.original_preview_pixmap = pixmap
         self.current_session = None
         self.analyze_button.setEnabled(True)
+        self._set_correction_mode(False)
+        self.correction_toggle.setEnabled(False)
+        self.save_session_button.setEnabled(False)
+        self.weapon_type_input.setText("")
+        self.distance_input.setValue(0.0)
         self.status_label.setText("Zdjecie wczytane")
         self.analysis_note.setText("Zdjecie jest gotowe do analizy.")
         self._reset_statistics()
@@ -462,17 +507,121 @@ class MainWindow(QMainWindow):
 
             self.status_label.setText("Analiza gotowa")
             self.analysis_note.setText(self._build_analysis_summary(session))
+            self.correction_toggle.setEnabled(True)
+            self.save_session_button.setEnabled(True)
 
         except AnalysisError as error:
             self.status_label.setText("Wymagana kalibracja")
             self.analysis_note.setText("Nie udalo sie automatycznie wykryc tarczy.")
+            self.correction_toggle.setEnabled(False)
+            self.save_session_button.setEnabled(False)
             QMessageBox.warning(self, "Analiza przerwana", str(error))
         except Exception as error:
             self.status_label.setText("Blad analizy")
             self.analysis_note.setText("Analiza nie mogla zostac zakonczona.")
+            self.correction_toggle.setEnabled(False)
+            self.save_session_button.setEnabled(False)
             QMessageBox.critical(self, "Blad analizy", str(error))
         finally:
             self.analyze_button.setEnabled(self.selected_image_path is not None)
+
+    def _toggle_correction_mode(self):
+        self._set_correction_mode(self.correction_toggle.isChecked())
+
+    def _set_correction_mode(self, enabled: bool):
+        self.correction_mode_enabled = enabled
+        self.correction_toggle.setChecked(enabled)
+
+        if enabled:
+            self.analysis_note.setText(
+                "Tryb korekty: kliknij na tarczy, aby dodac trafienie, "
+                "lub kliknij istniejace, aby je usunac."
+            )
+        elif self.current_session is not None:
+            self.analysis_note.setText(self._build_analysis_summary(self.current_session))
+
+    def _handle_image_click(self, label_x: float, label_y: float):
+        if not self.correction_mode_enabled or self.current_session is None:
+            return
+
+        pixmap = self.image_preview.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return
+
+        image = self.current_session.image
+        image_point = map_display_point_to_image(
+            display_point=(label_x, label_y),
+            label_size=(self.image_preview.width(), self.image_preview.height()),
+            pixmap_size=(pixmap.width(), pixmap.height()),
+            image_size=(image.width, image.height),
+        )
+
+        if image_point is None:
+            return
+
+        session = self.current_session
+        session.hits = toggle_hit_at(session.hits, session.target, image_point)
+        session.statistics = calculate_statistics(session.hits)
+        self._after_hits_changed(session)
+
+    def _after_hits_changed(self, session):
+        overlay = draw_analysis_overlay(session)
+        self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
+        self._update_preview_pixmap()
+        self._update_statistics(session.statistics)
+
+        scale = self.settings_page.get_scale_mm_per_px()
+        self.statistics_page.set_session(session, scale_mm_per_px=scale)
+
+    def _save_current_session(self):
+        if self.current_session is None:
+            return
+
+        weapon_type = self.weapon_type_input.text().strip() or None
+        distance_m = self.distance_input.value() or None
+        scale = self.settings_page.get_scale_mm_per_px()
+
+        try:
+            saved = save_session(
+                self.current_session,
+                weapon_type=weapon_type,
+                distance_m=distance_m,
+                scale_mm_per_px=scale,
+            )
+            QMessageBox.information(
+                self,
+                "Sesja zapisana",
+                f"Sesja treningowa zostala zapisana (id {saved.id}).",
+            )
+        except Exception as error:
+            QMessageBox.critical(self, "Blad zapisu", str(error))
+
+    def _load_session_into_analysis(self, session):
+        """Called by SessionsPage when the user loads a past session."""
+        self.current_session = session
+        self.selected_image_path = session.image.path
+        self.analyze_button.setEnabled(True)
+        self.correction_toggle.setEnabled(True)
+        self.save_session_button.setEnabled(True)
+        self._set_correction_mode(False)
+
+        overlay = draw_analysis_overlay(session)
+        self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
+        self._update_preview_pixmap()
+
+        self._update_statistics(session.statistics)
+
+        metadata = session.metadata or {}
+        scale = metadata.get("scale_mm_per_px") or self.settings_page.get_scale_mm_per_px()
+        self.statistics_page.set_session(session, scale_mm_per_px=scale)
+
+        self.weapon_type_input.setText(metadata.get("weapon_type") or "")
+        if metadata.get("distance_m"):
+            self.distance_input.setValue(metadata["distance_m"])
+
+        self.status_label.setText("Sesja wczytana")
+        self.analysis_note.setText(self._build_analysis_summary(session))
+        self._select_page(0)
 
     def _pixmap_from_bgr_image(self, image):
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -492,8 +641,8 @@ class MainWindow(QMainWindow):
     def _update_statistics(self, statistics):
         values = {
             "Liczba trafien": str(statistics.get("count", 0)),
-            "Sredni promien": self._format_px(statistics.get("mean_radius", 0.0)),
-            "Rozrzut maks.": self._format_px(statistics.get("extreme_spread", 0.0)),
+            "Celnosc": self._format_px(statistics.get("accuracy_radius", 0.0)),
+            "Precyzja": self._format_px(statistics.get("precision_radius", 0.0)),
             "CEP 50%": self._format_px(statistics.get("cep_50", 0.0)),
         }
 

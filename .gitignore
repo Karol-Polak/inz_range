@@ -1,4 +1,8 @@
 .idea/
 venv/
+venv1/
 __pycache__/
 *.pyc
+.pytest_cache/
+.DS_Store
+training_sessions.db
