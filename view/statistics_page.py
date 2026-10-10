@@ -3,14 +3,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-import matplotlib
-matplotlib.use("QtAgg")
-
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -19,50 +12,22 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from model.session import Session
-
-
-# ---------------------------------------------------------------------------
-# Colour tokens – must match main_window.py stylesheet
-# ---------------------------------------------------------------------------
-_BG       = "#ffffff"
-_CARD_BG  = "#f8fafb"
-_BORDER   = "#e1e6eb"
-_TEAL     = "#2f6f73"
-_TEAL2    = "#3f8c91"
-_ACCENT   = "#e05c2a"
-_TEXT     = "#1d2935"
-_MUTED    = "#657282"
-_GRID     = "#e8edf2"
-
-
-def _base_fig(rows: int = 1, cols: int = 1, h: float = 3.6):
-    """Return a Figure + axes array styled to match the app palette."""
-    fig, axes = plt.subplots(rows, cols, figsize=(5.2 * cols, h))
-    fig.patch.set_facecolor(_BG)
-    for ax in (np.array(axes).flat if hasattr(axes, "__iter__") else [axes]):
-        ax.set_facecolor(_CARD_BG)
-        ax.tick_params(colors=_MUTED, labelsize=8)
-        ax.xaxis.label.set_color(_MUTED)
-        ax.yaxis.label.set_color(_MUTED)
-        ax.title.set_color(_TEXT)
-        for spine in ax.spines.values():
-            spine.set_edgecolor(_BORDER)
-        ax.grid(color=_GRID, linewidth=0.6, linestyle="--")
-    fig.tight_layout(pad=1.6)
-    return fig, axes
-
-
-class _Canvas(FigureCanvas):
-    def __init__(self, fig: Figure):
-        super().__init__(fig)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumHeight(260)
+from view.chart_style import (
+    ACCENT as _ACCENT,
+    BG as _BG,
+    BORDER as _BORDER,
+    MUTED as _MUTED,
+    TEAL as _TEAL,
+    TEAL2 as _TEAL2,
+    TEXT as _TEXT,
+    Canvas as _Canvas,
+    base_fig as _base_fig,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,10 +53,17 @@ def _make_scatter(session: Session) -> _Canvas:
         )
         fig.colorbar(scatter, ax=ax, label="Odległość od środka (px)", pad=0.02)
 
+        mpi_x = session.statistics.get("mean_x", 0.0)
+        mpi_y = session.statistics.get("mean_y", 0.0)
         cep = session.statistics.get("cep_50", 0)
+
+        ax.plot(mpi_x, mpi_y, "+", color=_TEAL, markersize=14, markeredgewidth=2, zorder=4,
+                label="MPI (śr. punkt trafień)")
+
         if cep:
+            # CEP 50% to promień wokół MPI, nie wokół środka tarczy.
             ax.add_patch(mpatches.Circle(
-                (0, 0), cep, fill=False,
+                (mpi_x, mpi_y), cep, fill=False,
                 edgecolor=_TEAL, linewidth=1.5, linestyle="--", label=f"CEP 50% ({cep:.0f} px)",
             ))
 
@@ -118,19 +90,21 @@ def _make_radius_hist(session: Session) -> _Canvas:
     fig, ax = _base_fig(h=3.4)
 
     if hits:
-        radii = [math.sqrt(h.x**2 + h.y**2) for h in hits]
+        mpi_x = session.statistics.get("mean_x", 0.0)
+        mpi_y = session.statistics.get("mean_y", 0.0)
+        radii = [math.hypot(h.x - mpi_x, h.y - mpi_y) for h in hits]
         ax.hist(radii, bins=min(10, len(radii)), color=_TEAL, edgecolor=_BG, alpha=0.85)
 
-        mean_r = session.statistics.get("mean_radius", 0)
+        mean_r = session.statistics.get("precision_radius", 0)
         cep    = session.statistics.get("cep_50", 0)
 
         ax.axvline(mean_r, color=_ACCENT,  linewidth=1.8, linestyle="--", label=f"Średnia ({mean_r:.1f} px)")
         ax.axvline(cep,    color=_TEAL2,   linewidth=1.8, linestyle=":",  label=f"CEP 50% ({cep:.1f} px)")
         ax.legend(fontsize=8, facecolor=_BG, edgecolor=_BORDER)
 
-    ax.set_xlabel("Odległość od środka (px)")
+    ax.set_xlabel("Odległość od MPI (px)")
     ax.set_ylabel("Liczba trafień")
-    ax.set_title("Histogram odległości", fontweight="bold")
+    ax.set_title("Histogram precyzji (odległość od MPI)", fontweight="bold")
     fig.tight_layout(pad=1.8)
     return _Canvas(fig)
 
@@ -285,8 +259,9 @@ class StatisticsPage(QWidget):
 
         cards_data = [
             ("Liczba trafień",   fmt(stats.get("count", 0), 0),      ""),
-            ("Średni promień",   fmt(stats.get("mean_radius", 0)),    unit),
-            ("Odch. std.",       fmt(stats.get("std_radius", 0)),     unit),
+            ("Celność (MPI-środek)", fmt(stats.get("accuracy_radius", 0)), unit),
+            ("Precyzja (śr. od MPI)", fmt(stats.get("precision_radius", 0)), unit),
+            ("Odch. std. precyzji",  fmt(stats.get("precision_std", 0)),    unit),
             ("CEP 50%",          fmt(stats.get("cep_50", 0)),         unit),
             ("Rozrzut maks.",    fmt(stats.get("extreme_spread", 0)), unit),
             ("Outliery",         fmt(stats.get("outliers_count", 0), 0), ""),

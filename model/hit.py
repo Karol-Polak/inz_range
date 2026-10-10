@@ -11,3 +11,4 @@ class Hit:
     ring: Optional[int] = None
     valid: bool = True
     confidence: Optional[float] = None
+    source: str = "auto"  # "auto" (detection) or "manual" (user-added/corrected)
