@@ -3,6 +3,14 @@ Interaktywne narzedzie do recznego oznaczania polozenia trafien na zdjeciu
 tarczy - generuje/rozszerza plik ground_truth.json uzywany przez
 evaluation/evaluate_hit_detection.py.
 
+Obraz jest wczytywany przez services.image_loader.load_image() - TA SAMA
+funkcja, ktorej uzywa aplikacja i evaluate_hit_detection.py (poprzez
+analyze_image). Dzieki temu recznie klikniete wspolrzedne trafien sa w tym
+samym ukladzie (po korekcji orientacji EXIF), co trafienia zwracane przez
+detektor - wczesniej uzywano matplotlib.image.imread(), ktore orientacje
+EXIF ignoruje, co dla zdjec z telefonu moglo przesuwac/obracac caly uklad
+wspolrzednych wzgledem tego, co widzi detektor.
+
 Wymaga srodowiska z wyswietlaczem (nie zadziala przez SSH bez X11 / headless).
 
 Obsluga:
@@ -21,12 +29,30 @@ import math
 import os
 from typing import List, Tuple
 
-import matplotlib.image as mpimg
+import cv2
 import matplotlib.pyplot as plt
+import numpy as np
+
+from services.image_loader import load_image
+
+
+def load_image_for_labeling(image_path: str) -> np.ndarray:
+    """
+    Wczytuje obraz tak samo jak reszta aplikacji (services.image_loader.load_image,
+    ktore uzywa cv2.imread i honoruje orientacje EXIF), zamiast
+    matplotlib.image.imread (ktore ja ignoruje) - inaczej recznie oznaczone
+    wspolrzedne zylyby w innym ukladzie niz detekcje.
+
+    Zwraca tablice RGB (dla matplotlib.pyplot.imshow); load_image() zwraca
+    dane w kolejnosci BGR (konwencja OpenCV).
+    """
+
+    image = load_image(image_path)
+    return cv2.cvtColor(image.original_data, cv2.COLOR_BGR2RGB)
 
 
 def label_image(image_path: str) -> List[Tuple[float, float]]:
-    image = mpimg.imread(image_path)
+    image = load_image_for_labeling(image_path)
     fig, ax = plt.subplots()
     ax.imshow(image)
     ax.set_title(

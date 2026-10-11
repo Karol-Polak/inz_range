@@ -85,10 +85,14 @@ def _make_scatter(session: Session) -> _Canvas:
     ax.plot(0, 0, "x", color=_ACCENT, markersize=10, markeredgewidth=2, zorder=4)
     ax.set_aspect("equal", adjustable="datalim")
     ax.set_xlabel("X (px)")
-    ax.set_ylabel("Y (px)")
+    ax.set_ylabel("Y (px, dodatnie = w dół)")
     ax.set_title("Rozrzut trafień", fontweight="bold")
     if hits:
         ax.legend(fontsize=8, facecolor=_BG, edgecolor=_BORDER)
+
+    # Współrzędne trafień są w układzie obrazu (y rośnie w dół, tak jak na
+    # zdjęciu) - bez tego "góra zdjęcia" wyświetlałaby się na dole wykresu.
+    ax.invert_yaxis()
 
     fig.tight_layout(pad=1.8)
     return _Canvas(fig)

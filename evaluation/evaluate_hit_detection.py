@@ -13,7 +13,12 @@ Format pliku ground truth (JSON), np. assets/ground_truth.json:
       }
     }
 
-Wspolrzedne hits sa w pikselach oryginalnego obrazu (0,0 = lewy gorny rog).
+Wspolrzedne hits sa w pikselach obrazu W ORIENTACJI, KTORA PRODUKUJE
+services.image_loader.load_image() (cv2.imread, honoruje orientacje EXIF) -
+to ta sama funkcja, ktorej uzywa analyze_image() i evaluation/label_ground_truth.py
+do wczytania zdjecia. Jesli etykietujesz recznie zdjecie z telefonu z
+orientacja EXIF != 1, uzyj label_ground_truth.py (nie innego narzedzia) -
+inaczej klikniete wspolrzedne beda w innym ukladzie niz detekcje.
 "scale_mm_per_px" jest opcjonalne - jesli podane, blad polozenia jest
 dodatkowo raportowany w milimetrach.
 "target_type" jest opcjonalne (circular/foreground/manual) i sluzy tylko do
