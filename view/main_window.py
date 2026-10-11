@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 from controller.main_controller import AnalysisError, analyze_image
 from services.analysis_overlay import draw_analysis_overlay
 from services.manual_correction import map_display_point_to_image, set_aim_point_at, toggle_hit_at
-from services.statistics import calculate_statistics
+from services.statistics import recompute_statistics
 from view.statistics_page import StatisticsPage
 from view.settings_page import SettingsPage
 from view.sessions_page import SessionsPage
@@ -645,14 +645,13 @@ class MainWindow(QMainWindow):
 
         session = self.current_session
         session.hits = toggle_hit_at(session.hits, session.target, image_point)
-        session.statistics = calculate_statistics(session.hits)
+        session.statistics = recompute_statistics(session)
         self._after_hits_changed(session)
 
     def _handle_aim_point_click(self, image_point):
         session = self.current_session
         session.target = set_aim_point_at(session.target, image_point)
-        aim_point = (session.target.aim_offset_x, session.target.aim_offset_y)
-        session.statistics = calculate_statistics(session.hits, aim_point=aim_point)
+        session.statistics = recompute_statistics(session)
 
         self._set_aim_point_mode(False)
         self._after_hits_changed(session)

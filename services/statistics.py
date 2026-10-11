@@ -2,6 +2,7 @@ import math
 import statistics as stats_lib
 from typing import List, Dict, Tuple
 from model.hit import Hit
+from model.session import Session
 
 _MAD_OUTLIER_K = 2.0
 
@@ -95,6 +96,23 @@ def calculate_statistics(hits: List[Hit], aim_point: Tuple[float, float] = (0.0,
         "extreme_spread": extreme_spread,
         "outliers_count": outliers_count,
     }
+
+
+def recompute_statistics(session: Session) -> Dict[str, float]:
+    """
+    Przelicza statystyki sesji na podstawie jej AKTUALNYCH trafień
+    (session.hits), używając punktu celowania zapisanego w session.target
+    (None = celowanie w środek, tak jak wcześniej).
+
+    Używać tego zamiast wołać calculate_statistics(session.hits) wprost po
+    jakiejkolwiek zmianie trafień (ręczna korekta, przeliczenie po
+    zapisie/wczytaniu) - inaczej ustawiony punkt celowania jest po cichu
+    gubiony i celność wraca do liczenia względem środka tarczy.
+    """
+
+    target = session.target
+    aim_point = (target.aim_offset_x or 0.0, target.aim_offset_y or 0.0)
+    return calculate_statistics(session.hits, aim_point=aim_point)
 
 
 def _percentiles_25_75(values: List[float]):

@@ -1,5 +1,9 @@
-from services.statistics import calculate_statistics
+from services.statistics import calculate_statistics, recompute_statistics
 from model.hit import Hit
+from model.image import Image
+from model.session import Session
+from model.target import Target
+from services.manual_correction import toggle_hit_at
 
 
 def test_empty_hit():
@@ -131,3 +135,35 @@ def test_precision_metrics_are_unaffected_by_aim_point():
     assert shifted_stats["precision_std"] == default_stats["precision_std"]
     assert shifted_stats["cep_50"] == default_stats["cep_50"]
     assert shifted_stats["outliers_count"] == default_stats["outliers_count"]
+
+
+def test_recompute_statistics_uses_the_sessions_own_aim_point():
+    target = Target(center_x=100.0, center_y=100.0, radius=80.0, type="foreground",
+                     aim_offset_x=10.0, aim_offset_y=0.0)
+    session = Session(id=None, image=Image(path="x.jpg"), target=target, hits=[],
+                       statistics={}, metadata={})
+
+    stats = recompute_statistics(session)
+
+    assert stats["accuracy_radius"] == 0.0  # no hits yet, trivially 0 either way
+    assert stats == calculate_statistics(session.hits, aim_point=(10.0, 0.0))
+
+
+def test_recompute_statistics_keeps_aim_point_after_toggling_a_hit():
+    # Regression test: manual hit correction must not silently fall back to
+    # center-relative accuracy once an aim point has been set.
+    target = Target(center_x=100.0, center_y=100.0, radius=80.0, type="foreground",
+                     aim_offset_x=10.0, aim_offset_y=0.0)
+    session = Session(id=None, image=Image(path="x.jpg"), target=target, hits=[],
+                       statistics={}, metadata={})
+
+    # Same helper view/main_window.py's hit-correction handler uses: add a
+    # hit exactly at the aim point.
+    session.hits = toggle_hit_at(session.hits, target, image_point=(110.0, 100.0))
+    session.statistics = recompute_statistics(session)
+
+    aim_relative = calculate_statistics(session.hits, aim_point=(10.0, 0.0))
+    center_relative = calculate_statistics(session.hits)  # the buggy behaviour
+
+    assert session.statistics["accuracy_radius"] == aim_relative["accuracy_radius"] == 0.0
+    assert session.statistics["accuracy_radius"] != center_relative["accuracy_radius"]

@@ -14,7 +14,8 @@ from model.hit import Hit
 from model.image import Image
 from model.session import Session
 from model.target import Target
-from services.statistics import calculate_statistics
+from services.manual_correction import toggle_hit_at
+from services.statistics import calculate_statistics, recompute_statistics
 
 OLD_SCHEMA_SQL = """
 CREATE TABLE training_sessions (
@@ -160,3 +161,35 @@ def test_accuracy_survives_save_and_load_with_a_custom_aim_point(tmp_path, sampl
     # Recomputed on load, but using the SAME (persisted) aim point - must
     # match exactly, not silently fall back to center-relative accuracy.
     assert loaded.statistics["accuracy_radius"] == 0.0
+
+
+def test_accuracy_after_hit_correction_matches_between_save_and_load(tmp_path, sample_image_path):
+    # Regression test for the bug where the hit-correction handler called
+    # calculate_statistics(hits) without the aim point: save_session() then
+    # persisted a center-relative accuracy_radius while load_session()
+    # recomputed an aim-point-relative one, so the two disagreed.
+    from sqlmodel import SQLModel
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'corrected.db'}", echo=False)
+    SQLModel.metadata.create_all(engine)
+
+    target = Target(center_x=25.0, center_y=25.0, radius=20.0, type="foreground",
+                     aim_offset_x=5.0, aim_offset_y=-5.0)
+    session = Session(
+        id=None,
+        image=Image(path=sample_image_path, original_data=np.zeros((50, 50, 3), dtype=np.uint8)),
+        target=target,
+        hits=[],
+        statistics={},
+        metadata={},
+    )
+
+    # Simulate a manual hit correction the way view/main_window.py's
+    # correction-mode handler does it: toggle_hit_at() + recompute_statistics().
+    session.hits = toggle_hit_at(session.hits, target, image_point=(30.0, 20.0))
+    session.statistics = recompute_statistics(session)
+
+    saved = save_session(session, engine=engine)
+    loaded = load_session(saved.id, engine=engine)
+
+    assert saved.accuracy_radius == loaded.statistics["accuracy_radius"]

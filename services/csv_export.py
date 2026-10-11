@@ -43,7 +43,7 @@ def export_session_to_csv(session: Session, path: str, scale_mm_per_px: Optional
         writer.writerow(["Liczba trafien", stats.get("count", 0), ""])
 
         for label, key in (
-            ("Celnosc (MPI-srodek)", "accuracy_radius"),
+            ("Celnosc (MPI od punktu celowania)", "accuracy_radius"),
             ("Precyzja (odleglosc od MPI)", "precision_radius"),
             ("Odchylenie std. precyzji", "precision_std"),
             ("CEP 50%", "cep_50"),

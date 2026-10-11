@@ -10,7 +10,7 @@ from model.hit import Hit
 from model.session import Session
 from model.target import Target
 from services.image_loader import load_image
-from services.statistics import calculate_statistics
+from services.statistics import recompute_statistics
 
 
 def save_session(
@@ -120,17 +120,13 @@ def load_session(session_id: int, engine=None) -> Optional[Session]:
     )
 
     image = load_image(training_session.image_path)
-    # None (old rows, or a session that never had a custom aim point) means
-    # "aim at the detected center" - the same default calculate_statistics() uses.
-    aim_point = (training_session.aim_offset_x or 0.0, training_session.aim_offset_y or 0.0)
-    statistics = calculate_statistics(hits, aim_point=aim_point)
 
-    return Session(
+    session = Session(
         id=training_session.id,
         image=image,
         target=target,
         hits=hits,
-        statistics=statistics,
+        statistics={},
         metadata={
             "weapon_type": training_session.weapon_type,
             "distance_m": training_session.distance_m,
@@ -138,6 +134,12 @@ def load_session(session_id: int, engine=None) -> Optional[Session]:
             "notes": training_session.notes,
         },
     )
+    # recompute_statistics() reads the aim point from session.target - None
+    # (old rows, or a session that never had a custom aim point) falls back
+    # to "aim at the detected center", same as before this field existed.
+    session.statistics = recompute_statistics(session)
+
+    return session
 
 
 def list_sessions(engine=None) -> List[TrainingSession]:

@@ -46,6 +46,9 @@ def test_export_session_writes_summary_and_hit_rows(tmp_path):
 
     assert any("Liczba trafien" in cell for cell in flat)
     assert any("CEP 50%" in cell for cell in flat)
+    # accuracy is measured from the aim point, not necessarily the detected
+    # center - the label must say so explicitly.
+    assert any("Celnosc (MPI od punktu celowania)" in cell for cell in flat)
     # two hit data rows should be present (plus a header row)
     hit_header_index = next(i for i, row in enumerate(rows) if row and row[0] == "Nr")
     hit_rows = [row for row in rows[hit_header_index + 1:] if row and row[0].strip()]
