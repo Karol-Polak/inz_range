@@ -1,8 +1,6 @@
 opencv-python
 numpy
 matplotlib
-Pillow
-scikit-image
 PyQt6
 pytest
 sqlmodel

@@ -7,6 +7,58 @@ import numpy as np
 from model.image import Image
 from model.target import Target
 from model.hit import Hit
+from utils.config import (
+    BRIGHT_ABSOLUTE_THRESHOLD,
+    BRIGHT_OPEN_ITERATIONS,
+    BRIGHT_OPEN_KERNEL_SIZE,
+    BRIGHT_TARGET_NEIGHBORHOOD_DILATE_ITERATIONS,
+    BRIGHT_TARGET_NEIGHBORHOOD_DILATE_KERNEL_SIZE,
+    BRIGHT_TOPHAT_KERNEL_SIZE,
+    CANDIDATE_MAX_AREA_FLOOR,
+    CANDIDATE_MAX_AREA_FRACTION,
+    CANDIDATE_MIN_AREA_FLOOR,
+    CANDIDATE_MIN_AREA_FRACTION,
+    CENTRAL_MASK_CENTER_LIMIT_FRACTION,
+    CENTRAL_MASK_CLOSE_ITERATIONS,
+    CENTRAL_MASK_CLOSE_KERNEL_SIZE,
+    CENTRAL_MASK_DARK_THRESHOLD,
+    CENTRAL_MASK_MIN_COMPONENT_AREA_FRACTION,
+    CENTRAL_MASK_SATURATION_THRESHOLD,
+    DEDUP_DISTANCE_PX,
+    DIGIT_BRIGHT_RANGE_MAX,
+    DIGIT_BRIGHT_RANGE_MIN,
+    DIGIT_ESCAPE_CIRCULARITY,
+    DIGIT_ESCAPE_FILL_RATIO,
+    DIGIT_ESCAPE_MIN_AREA,
+    DIGIT_MIN_NEARBY_STROKES,
+    DIGIT_PADDING_FLOOR,
+    DIGIT_PADDING_MULTIPLIER,
+    DIGIT_STROKE_ELONGATED_MULTIPLIER,
+    DIGIT_STROKE_MIN_AREA,
+    DIGIT_STROKE_THIN_FILL_RATIO,
+    FOREGROUND_MASK_ASPECT_RATIO_MAX,
+    FOREGROUND_MASK_ASPECT_RATIO_MIN,
+    FOREGROUND_MASK_CLOSE_ITERATIONS,
+    FOREGROUND_MASK_CLOSE_KERNEL_SIZE,
+    FOREGROUND_MASK_DISTANCE_FRACTION,
+    FOREGROUND_MASK_FALLBACK_FILL_RATIO,
+    FOREGROUND_MASK_MIN_CONTOUR_AREA_FRACTION,
+    FOREGROUND_MASK_MIN_FILL_RATIO,
+    HIT_ASPECT_RATIO_MAX,
+    HIT_ASPECT_RATIO_MIN,
+    HIT_CONFIDENCE_MAX,
+    HIT_MIN_CIRCULARITY,
+    HIT_MIN_FILL_RATIO,
+    INSIDE_TARGET_MIN_RATIO,
+    INSIDE_TARGET_RADIUS_FLOOR,
+    INSIDE_TARGET_RADIUS_MULTIPLIER,
+    SPLIT_MIN_AREA,
+    SPLIT_MIN_DIMENSION,
+    SPLIT_MIN_DISTINCT_PEAKS,
+    SPLIT_PEAK_THRESHOLD_FRACTION,
+    SPLIT_SEPARATED_DILATE_ITERATIONS,
+    SPLIT_SEPARATED_DILATE_KERNEL_SIZE,
+)
 
 
 def detect_hit(image: Image, target: Target) -> List[Hit]:
@@ -48,11 +100,11 @@ def detect_hit(image: Image, target: Target) -> List[Hit]:
             continue
 
         aspect_ratio = width / height
-        if aspect_ratio < 0.55 or aspect_ratio > 1.8:
+        if aspect_ratio < HIT_ASPECT_RATIO_MIN or aspect_ratio > HIT_ASPECT_RATIO_MAX:
             continue
 
         fill_ratio = pixel_area / (width * height)
-        if fill_ratio < 0.38:
+        if fill_ratio < HIT_MIN_FILL_RATIO:
             continue
 
         component_mask = np.uint8(labels[y:y + height, x:x + width] == component_id) * 255
@@ -72,7 +124,7 @@ def detect_hit(image: Image, target: Target) -> List[Hit]:
             continue
 
         circularity = 4 * math.pi * area / (perimeter**2)
-        if circularity < 0.65:
+        if circularity < HIT_MIN_CIRCULARITY:
             continue
 
         cx, cy = centroids[component_id]
@@ -106,7 +158,7 @@ def detect_hit(image: Image, target: Target) -> List[Hit]:
                 y=dy,
                 distance_from_center=distance,
                 valid=True,
-                confidence=float(min(1.0, circularity)),
+                confidence=float(min(HIT_CONFIDENCE_MAX, circularity)),
             )
         )
 
@@ -124,17 +176,19 @@ def _build_central_circular_target_mask(gray, target: Target):
     image_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
 
-    dark_or_colored = np.uint8((gray < 245) | (hsv[:, :, 1] > 40)) * 255
+    dark_or_colored = np.uint8(
+        (gray < CENTRAL_MASK_DARK_THRESHOLD) | (hsv[:, :, 1] > CENTRAL_MASK_SATURATION_THRESHOLD)
+    ) * 255
     dark_or_colored = cv2.morphologyEx(
         dark_or_colored,
         cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
-        iterations=1
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, CENTRAL_MASK_CLOSE_KERNEL_SIZE),
+        iterations=CENTRAL_MASK_CLOSE_ITERATIONS
     )
 
     center_x = float(target.center_x)
     center_y = float(target.center_y)
-    center_limit = target.radius * 0.62
+    center_limit = target.radius * CENTRAL_MASK_CENTER_LIMIT_FRACTION
 
     component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         dark_or_colored,
@@ -146,7 +200,7 @@ def _build_central_circular_target_mask(gray, target: Target):
 
     for component_id in range(1, component_count):
         area = stats[component_id, cv2.CC_STAT_AREA]
-        if area < image_area * 0.0004:
+        if area < image_area * CENTRAL_MASK_MIN_COMPONENT_AREA_FRACTION:
             continue
 
         cx, cy = centroids[component_id]
@@ -158,7 +212,7 @@ def _build_central_circular_target_mask(gray, target: Target):
 
     if cv2.countNonZero(mask) == 0:
         center = (int(round(target.center_x)), int(round(target.center_y)))
-        cv2.circle(mask, center, int(round(target.radius * 0.62)), 255, -1)
+        cv2.circle(mask, center, int(round(target.radius * CENTRAL_MASK_CENTER_LIMIT_FRACTION)), 255, -1)
 
     return mask
 
@@ -171,8 +225,8 @@ def _build_large_dark_foreground_mask(gray, target: Target):
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
 
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, close_kernel, iterations=2)
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, FOREGROUND_MASK_CLOSE_KERNEL_SIZE)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, close_kernel, iterations=FOREGROUND_MASK_CLOSE_ITERATIONS)
 
     contours, _ = cv2.findContours(
         dark_mask,
@@ -188,16 +242,17 @@ def _build_large_dark_foreground_mask(gray, target: Target):
 
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < image_area * 0.001:
+        if area < image_area * FOREGROUND_MASK_MIN_CONTOUR_AREA_FRACTION:
             continue
 
         x, y, width, height = cv2.boundingRect(contour)
         fill_ratio = area / max(1, width * height)
-        if fill_ratio < 0.08:
+        if fill_ratio < FOREGROUND_MASK_MIN_FILL_RATIO:
             continue
 
         aspect_ratio = width / max(1, height)
-        if (aspect_ratio < 0.15 or aspect_ratio > 6.5) and fill_ratio < 0.22:
+        if (aspect_ratio < FOREGROUND_MASK_ASPECT_RATIO_MIN or aspect_ratio > FOREGROUND_MASK_ASPECT_RATIO_MAX) \
+                and fill_ratio < FOREGROUND_MASK_FALLBACK_FILL_RATIO:
             continue
 
         moments = cv2.moments(contour)
@@ -209,7 +264,7 @@ def _build_large_dark_foreground_mask(gray, target: Target):
         distance = math.sqrt(
             (center_x - target.center_x) ** 2 + (center_y - target.center_y) ** 2
         )
-        if distance > target.radius * 1.05:
+        if distance > target.radius * FOREGROUND_MASK_DISTANCE_FRACTION:
             continue
 
         cv2.drawContours(foreground, [contour], -1, 255, -1)
@@ -218,10 +273,10 @@ def _build_large_dark_foreground_mask(gray, target: Target):
 
 
 def _build_bright_hit_candidates(gray, target_mask):
-    blackhat_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (23, 23))
+    blackhat_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, BRIGHT_TOPHAT_KERNEL_SIZE)
     bright_detail = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, blackhat_kernel)
 
-    _, absolute_bright = cv2.threshold(gray, 205, 255, cv2.THRESH_BINARY)
+    _, absolute_bright = cv2.threshold(gray, BRIGHT_ABSOLUTE_THRESHOLD, 255, cv2.THRESH_BINARY)
     _, local_bright = cv2.threshold(
         bright_detail,
         0,
@@ -233,13 +288,13 @@ def _build_bright_hit_candidates(gray, target_mask):
 
     target_neighborhood = cv2.dilate(
         target_mask,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
-        iterations=1
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, BRIGHT_TARGET_NEIGHBORHOOD_DILATE_KERNEL_SIZE),
+        iterations=BRIGHT_TARGET_NEIGHBORHOOD_DILATE_ITERATIONS
     )
     candidates = cv2.bitwise_and(candidates, target_neighborhood)
 
-    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    candidates = cv2.morphologyEx(candidates, cv2.MORPH_OPEN, open_kernel, iterations=1)
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, BRIGHT_OPEN_KERNEL_SIZE)
+    candidates = cv2.morphologyEx(candidates, cv2.MORPH_OPEN, open_kernel, iterations=BRIGHT_OPEN_ITERATIONS)
 
     return candidates
 
@@ -261,7 +316,7 @@ def _split_touching_candidates(candidates):
 
         component = np.uint8(labels[y:y + height, x:x + width] == component_id) * 255
 
-        if area < 160 or max(width, height) < 18:
+        if area < SPLIT_MIN_AREA or max(width, height) < SPLIT_MIN_DIMENSION:
             split[y:y + height, x:x + width] = cv2.bitwise_or(
                 split[y:y + height, x:x + width],
                 component
@@ -271,14 +326,16 @@ def _split_touching_candidates(candidates):
         distance = cv2.distanceTransform(component, cv2.DIST_L2, 5)
         _, peaks = cv2.threshold(
             distance,
-            0.55 * distance.max(),
+            SPLIT_PEAK_THRESHOLD_FRACTION * distance.max(),
             255,
             cv2.THRESH_BINARY
         )
         peaks = np.uint8(peaks)
 
+        # peak_count zawiera też etykietę tła (0), więc potrzeba więcej niż
+        # SPLIT_MIN_DISTINCT_PEAKS etykiet, by uznać, że są >=2 odrębne szczyty.
         peak_count, peak_labels = cv2.connectedComponents(peaks)
-        if peak_count <= 2:
+        if peak_count <= SPLIT_MIN_DISTINCT_PEAKS:
             split[y:y + height, x:x + width] = cv2.bitwise_or(
                 split[y:y + height, x:x + width],
                 component
@@ -295,8 +352,8 @@ def _split_touching_candidates(candidates):
             separated = np.uint8(markers == marker_id) * 255
             separated = cv2.dilate(
                 separated,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
-                iterations=1
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, SPLIT_SEPARATED_DILATE_KERNEL_SIZE),
+                iterations=SPLIT_SEPARATED_DILATE_ITERATIONS
             )
             separated = cv2.bitwise_and(separated, component)
             split[y:y + height, x:x + width] = cv2.bitwise_or(
@@ -309,13 +366,13 @@ def _split_touching_candidates(candidates):
 
 def _candidate_area_range(gray):
     image_area = gray.shape[0] * gray.shape[1]
-    min_area = max(18, int(image_area * 0.000006))
-    max_area = max(900, int(image_area * 0.0016))
+    min_area = max(CANDIDATE_MIN_AREA_FLOOR, int(image_area * CANDIDATE_MIN_AREA_FRACTION))
+    max_area = max(CANDIDATE_MAX_AREA_FLOOR, int(image_area * CANDIDATE_MAX_AREA_FRACTION))
     return min_area, max_area
 
 
 def _is_inside_target_area(target_mask, cx, cy, width, height):
-    radius = max(7, int(round(max(width, height) * 1.8)))
+    radius = max(INSIDE_TARGET_RADIUS_FLOOR, int(round(max(width, height) * INSIDE_TARGET_RADIUS_MULTIPLIER)))
     x1 = max(0, cx - radius)
     y1 = max(0, cy - radius)
     x2 = min(target_mask.shape[1], cx + radius + 1)
@@ -326,7 +383,7 @@ def _is_inside_target_area(target_mask, cx, cy, width, height):
         return False
 
     target_ratio = cv2.countNonZero(neighborhood) / neighborhood.size
-    return target_ratio > 0.35
+    return target_ratio > INSIDE_TARGET_MIN_RATIO
 
 
 def _looks_like_printed_digit_fragment(
@@ -340,10 +397,10 @@ def _looks_like_printed_digit_fragment(
     fill_ratio,
     pixel_area,
 ):
-    if circularity > 0.82 and fill_ratio > 0.55 and pixel_area >= 45:
+    if circularity > DIGIT_ESCAPE_CIRCULARITY and fill_ratio > DIGIT_ESCAPE_FILL_RATIO and pixel_area >= DIGIT_ESCAPE_MIN_AREA:
         return False
 
-    padding = max(4, int(round(max(width, height) * 0.75)))
+    padding = max(DIGIT_PADDING_FLOOR, int(round(max(width, height) * DIGIT_PADDING_MULTIPLIER)))
     x1 = max(0, x - padding)
     y1 = max(0, y - padding)
     x2 = min(gray.shape[1], x + width + padding)
@@ -354,7 +411,7 @@ def _looks_like_printed_digit_fragment(
     if roi.size == 0:
         return False
 
-    bright_pixels = cv2.inRange(roi, 150, 255)
+    bright_pixels = cv2.inRange(roi, DIGIT_BRIGHT_RANGE_MIN, DIGIT_BRIGHT_RANGE_MAX)
     bright_pixels = cv2.bitwise_and(bright_pixels, roi_target)
 
     component_count, _, stats, _ = cv2.connectedComponentsWithStats(
@@ -368,15 +425,15 @@ def _looks_like_printed_digit_fragment(
         comp_width = stats[component_id, cv2.CC_STAT_WIDTH]
         comp_height = stats[component_id, cv2.CC_STAT_HEIGHT]
 
-        if area < 8:
+        if area < DIGIT_STROKE_MIN_AREA:
             continue
 
-        elongated = comp_width > width * 1.5 or comp_height > height * 1.5
-        thin = area / max(1, comp_width * comp_height) < 0.45
+        elongated = comp_width > width * DIGIT_STROKE_ELONGATED_MULTIPLIER or comp_height > height * DIGIT_STROKE_ELONGATED_MULTIPLIER
+        thin = area / max(1, comp_width * comp_height) < DIGIT_STROKE_THIN_FILL_RATIO
         if elongated or thin:
             nearby_printed_strokes += 1
 
-    return nearby_printed_strokes >= 2
+    return nearby_printed_strokes >= DIGIT_MIN_NEARBY_STROKES
 
 
 def _deduplicate_hits(hits: List[Hit]) -> List[Hit]:
@@ -387,7 +444,7 @@ def _deduplicate_hits(hits: List[Hit]) -> List[Hit]:
         for existing in unique_hits:
             dx = hit.x - existing.x
             dy = hit.y - existing.y
-            if math.sqrt(dx**2 + dy**2) < 12:
+            if math.sqrt(dx**2 + dy**2) < DEDUP_DISTANCE_PX:
                 duplicate = True
                 break
 

@@ -1,6 +1,8 @@
+from dataclasses import replace
+
 from model.hit import Hit
 from model.target import Target
-from services.manual_correction import map_display_point_to_image, toggle_hit_at
+from services.manual_correction import map_display_point_to_image, set_aim_point_at, toggle_hit_at
 
 TARGET = Target(center_x=50.0, center_y=50.0, radius=40.0, type="circular")
 
@@ -68,3 +70,28 @@ def test_toggle_hit_at_does_not_remove_distant_hit():
     updated = toggle_hit_at(hits, TARGET, image_point=(90.0, 90.0))
 
     assert len(updated) == 2
+
+
+def test_set_aim_point_at_stores_offset_from_center():
+    updated = set_aim_point_at(TARGET, image_point=(60.0, 45.0))
+
+    assert updated.aim_offset_x == 10.0  # 60 - 50
+    assert updated.aim_offset_y == -5.0  # 45 - 50
+
+
+def test_set_aim_point_at_does_not_mutate_the_original_target():
+    original = replace(TARGET)  # a fresh copy, aim_offset_x/y still None
+
+    set_aim_point_at(original, image_point=(60.0, 45.0))
+
+    assert original.aim_offset_x is None
+    assert original.aim_offset_y is None
+
+
+def test_set_aim_point_at_preserves_other_target_fields():
+    updated = set_aim_point_at(TARGET, image_point=(60.0, 45.0))
+
+    assert updated.center_x == TARGET.center_x
+    assert updated.center_y == TARGET.center_y
+    assert updated.radius == TARGET.radius
+    assert updated.type == TARGET.type

@@ -32,6 +32,12 @@ class TrainingSession(SQLModel, table=True):
     mean_x: float
     mean_y: float
 
+    # Przesunięcie punktu celowania od target_center_x/y (patrz model/target.py).
+    # None = celowanie w wykryty środek (stare sesje, zapisane przed tą kolumną,
+    # mają tu NULL i zachowują się tak jak dawniej).
+    aim_offset_x: Optional[float] = None
+    aim_offset_y: Optional[float] = None
+
     scale_mm_per_px: Optional[float] = None
     weapon_type: Optional[str] = None
     distance_m: Optional[float] = None

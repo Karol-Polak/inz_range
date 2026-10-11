@@ -1,22 +1,26 @@
 import math
 import statistics as stats_lib
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from model.hit import Hit
 
 _MAD_OUTLIER_K = 2.0
 
 
-def calculate_statistics(hits: List[Hit]) -> Dict[str, float]:
+def calculate_statistics(hits: List[Hit], aim_point: Tuple[float, float] = (0.0, 0.0)) -> Dict[str, float]:
     """
     Oblicza statystyki dla listy trafień.
     Współrzędne trafień zakładane są względem środka tarczy (0,0).
 
     Rozróżnia:
       - celność (accuracy_radius): odległość średniego punktu trafień (MPI)
-        od środka tarczy - mówi, jak bardzo grupa jest "przesunięta".
+        od punktu celowania (aim_point) - mówi, jak bardzo grupa jest
+        "przesunięta" względem tego, gdzie strzelec faktycznie celował.
+        Domyślnie aim_point = środek tarczy (0,0) - dla tarcz kołowych to
+        zwykle to samo; dla sylwetek (np. IDPA) punkt celowania może różnić
+        się od geometrycznego środka wykrytego konturu.
       - precyzję (precision_radius / precision_std / cep_50): rozrzut trafień
         wokół MPI - mówi, jak "ciasna" jest sama grupa, niezależnie od tego,
-        czy jest wycelowana w środek.
+        czy jest wycelowana w środek. Nie zależy od aim_point.
     """
 
     valid_hits = [hit for hit in hits if hit.valid]
@@ -47,8 +51,8 @@ def calculate_statistics(hits: List[Hit]) -> Dict[str, float]:
     mean_x = sum(xs) / count
     mean_y = sum(ys) / count
 
-    # Celność: jak daleko MPI leży od środka tarczy (0,0)
-    accuracy_radius = math.hypot(mean_x, mean_y)
+    # Celność: jak daleko MPI leży od punktu celowania
+    accuracy_radius = math.hypot(mean_x - aim_point[0], mean_y - aim_point[1])
 
     # Precyzja: rozrzut trafień względem MPI (nie środka tarczy)
     radii_from_mpi = [math.hypot(x - mean_x, y - mean_y) for x, y in zip(xs, ys)]

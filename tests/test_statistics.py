@@ -91,3 +91,43 @@ def test_no_false_positive_outliers_in_tight_uniform_group():
     stats = calculate_statistics(hits)
 
     assert stats["outliers_count"] == 0
+
+
+def test_aim_point_defaults_to_target_center():
+    # No aim_point given -> identical to accuracy measured from (0, 0),
+    # i.e. today's behaviour for every existing caller.
+    hits = [Hit(x=10.0, y=0.0), Hit(x=10.0, y=0.0)]
+
+    stats = calculate_statistics(hits)
+
+    assert round(stats["accuracy_radius"], 2) == 10.0
+
+
+def test_accuracy_radius_is_measured_from_the_given_aim_point():
+    # MPI is at (10, 0). With the aim point also at (10, 0) - e.g. a
+    # silhouette target where the shooter aims at a point other than the
+    # contour centroid - accuracy should be 0, not 10.
+    hits = [Hit(x=10.0, y=0.0), Hit(x=10.0, y=0.0)]
+
+    stats = calculate_statistics(hits, aim_point=(10.0, 0.0))
+
+    assert round(stats["accuracy_radius"], 2) == 0.0
+
+
+def test_precision_metrics_are_unaffected_by_aim_point():
+    # Precision is about spread around MPI, not about the aim point -
+    # moving the aim point must not change precision_radius/cep_50/etc.
+    hits = [
+        Hit(x=1.0, y=0.0),
+        Hit(x=0.0, y=1.0),
+        Hit(x=-1.0, y=0.0),
+        Hit(x=0.0, y=-1.0),
+    ]
+
+    default_stats = calculate_statistics(hits)
+    shifted_stats = calculate_statistics(hits, aim_point=(50.0, -30.0))
+
+    assert shifted_stats["precision_radius"] == default_stats["precision_radius"]
+    assert shifted_stats["precision_std"] == default_stats["precision_std"]
+    assert shifted_stats["cep_50"] == default_stats["cep_50"]
+    assert shifted_stats["outliers_count"] == default_stats["outliers_count"]

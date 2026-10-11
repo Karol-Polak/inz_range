@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 from typing import List, Optional, Tuple
 
 from model.hit import Hit
@@ -78,3 +79,20 @@ def toggle_hit_at(
     )
 
     return hits + [new_hit]
+
+
+def set_aim_point_at(target: Target, image_point: Tuple[float, float]) -> Target:
+    """
+    Ustawia punkt celowania w miejscu kliknięcia, jako przesunięcie od
+    środka tarczy (tym samym układzie, w którym liczone są trafienia).
+
+    Zwraca nowy obiekt Target (nie modyfikuje przekazanego).
+    """
+
+    x_img, y_img = image_point
+
+    return replace(
+        target,
+        aim_offset_x=x_img - target.center_x,
+        aim_offset_y=y_img - target.center_y,
+    )

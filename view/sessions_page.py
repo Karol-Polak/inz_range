@@ -5,9 +5,11 @@ from typing import Callable, List, Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -19,7 +21,8 @@ from PyQt6.QtWidgets import (
 from database.models import TrainingSession
 from database.repository import delete_session, list_sessions, load_session
 from model.session import Session
-from services.session_trends import build_trend_series, compare_sessions
+from services.csv_export import export_sessions_list_to_csv
+from services.session_trends import build_trend_series, compare_sessions, filter_sessions
 from view.chart_style import ACCENT, BG, BORDER, TEAL, TEAL2, Canvas, base_fig
 
 
@@ -33,6 +36,8 @@ class SessionsPage(QWidget):
         super().__init__(parent)
         self._on_session_loaded = on_session_loaded
         self._sessions: List[TrainingSession] = []
+        self._visible_sessions: List[TrainingSession] = []
+        self._filter_query = ""
         self._chart_canvas: Optional[Canvas] = None
         self._build_ui()
         self.refresh()
@@ -43,6 +48,18 @@ class SessionsPage(QWidget):
 
     def refresh(self):
         self._sessions = list_sessions()
+        self._apply_filter()
+
+    # ------------------------------------------------------------------
+    # Filtering
+    # ------------------------------------------------------------------
+
+    def _on_filter_changed(self, text: str):
+        self._filter_query = text
+        self._apply_filter()
+
+    def _apply_filter(self):
+        self._visible_sessions = filter_sessions(self._sessions, self._filter_query)
         self._populate_list()
         self._rebuild_trend_chart()
         self._update_comparison()
@@ -76,6 +93,11 @@ class SessionsPage(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
+        self._filter_input = QLineEdit()
+        self._filter_input.setPlaceholderText("Filtruj po broni lub odległości...")
+        self._filter_input.textChanged.connect(self._on_filter_changed)
+        layout.addWidget(self._filter_input)
+
         self._list_widget = QListWidget()
         self._list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list_widget.itemSelectionChanged.connect(self._on_selection_changed)
@@ -101,9 +123,15 @@ class SessionsPage(QWidget):
         refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_button.clicked.connect(self.refresh)
 
+        export_button = QPushButton("Eksportuj listę CSV")
+        export_button.setObjectName("secondaryButton")
+        export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        export_button.clicked.connect(self._export_list_csv)
+
         buttons.addWidget(self._load_button)
         buttons.addWidget(self._delete_button)
         buttons.addWidget(refresh_button)
+        buttons.addWidget(export_button)
         layout.addLayout(buttons)
 
         return panel
@@ -142,11 +170,25 @@ class SessionsPage(QWidget):
     def _populate_list(self):
         self._list_widget.clear()
 
-        for session in self._sessions:
+        for session in self._visible_sessions:
             label = (
                 f"{session.created_at:%Y-%m-%d %H:%M} — "
                 f"{session.hit_count} strzałów, CEP {session.cep_50:.0f}px"
             )
+
+            extras = []
+            if session.weapon_type:
+                extras.append(session.weapon_type)
+            if session.distance_m:
+                extras.append(f"{session.distance_m:g} m")
+            if session.scale_mm_per_px:
+                extras.append(f"{session.scale_mm_per_px:.3f} mm/px")
+            if session.notes:
+                note = session.notes if len(session.notes) <= 30 else session.notes[:30] + "…"
+                extras.append(note)
+            if extras:
+                label += " | " + ", ".join(extras)
+
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, session.id)
             self._list_widget.addItem(item)
@@ -203,6 +245,21 @@ class SessionsPage(QWidget):
         delete_session(ids[0])
         self.refresh()
 
+    def _export_list_csv(self):
+        if not self._sessions:
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Eksportuj liste sesji do CSV", "", "CSV (*.csv)",
+        )
+        if not file_path:
+            return
+
+        try:
+            export_sessions_list_to_csv(self._sessions, file_path)
+        except Exception as error:
+            QMessageBox.critical(self, "Blad eksportu", str(error))
+
     # ------------------------------------------------------------------
     # Comparison
     # ------------------------------------------------------------------
@@ -216,28 +273,45 @@ class SessionsPage(QWidget):
             )
             return
 
-        by_id = {session.id: session for session in self._sessions}
+        by_id = {session.id: session for session in self._visible_sessions}
         first, second = sorted((by_id[ids[0]], by_id[ids[1]]), key=lambda s: s.created_at)
         delta = compare_sessions(first, second)
 
         self._comparison_label.setText(self._format_comparison(first, second, delta))
 
     @staticmethod
-    def _format_comparison(first: TrainingSession, second: TrainingSession, delta: dict) -> str:
+    def _format_comparison(first: TrainingSession, second: TrainingSession, comparison: dict) -> str:
         def signed(value: float) -> str:
             return f"{value:+.1f}"
 
-        return (
-            f"{first.created_at:%Y-%m-%d %H:%M} → {second.created_at:%Y-%m-%d %H:%M}\n\n"
-            f"Trafienia: {first.hit_count} → {second.hit_count} "
-            f"({delta['hit_count_delta']:+d})\n"
-            f"Celność (MPI-środek): {first.accuracy_radius:.1f} → {second.accuracy_radius:.1f} px "
-            f"({signed(delta['accuracy_radius_delta'])} px)\n"
-            f"Precyzja (śr. od MPI): {first.precision_radius:.1f} → {second.precision_radius:.1f} px "
-            f"({signed(delta['precision_radius_delta'])} px)\n"
-            f"CEP 50%: {first.cep_50:.1f} → {second.cep_50:.1f} px "
-            f"({signed(delta['cep_50_delta'])} px)"
+        unit = comparison["unit"]
+        lines = []
+
+        if comparison["warning"]:
+            lines.append(f"⚠ {comparison['warning']}")
+            lines.append("")
+
+        lines.append(f"{first.created_at:%Y-%m-%d %H:%M} → {second.created_at:%Y-%m-%d %H:%M}")
+        lines.append("")
+        lines.append(
+            f"Trafienia: {comparison['hit_count_first']} → {comparison['hit_count_second']} "
+            f"({comparison['hit_count_delta']:+d})"
         )
+
+        for label, metric in (
+            ("Celność (MPI-środek)", "accuracy_radius"),
+            ("Precyzja (śr. od MPI)", "precision_radius"),
+            ("CEP 50%", "cep_50"),
+        ):
+            first_value = comparison[f"{metric}_first"]
+            second_value = comparison[f"{metric}_second"]
+            delta_value = comparison[f"{metric}_delta"]
+            lines.append(
+                f"{label}: {first_value:.1f} → {second_value:.1f} {unit} "
+                f"({signed(delta_value)} {unit})"
+            )
+
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Trend chart
@@ -250,24 +324,33 @@ class SessionsPage(QWidget):
                 item.widget().deleteLater()
         self._chart_canvas = None
 
-        series = build_trend_series(self._sessions)
-
-        if len(series) < 2:
-            placeholder = QLabel("Zapisz co najmniej dwie sesje, aby zobaczyć trend w czasie.")
+        if len(self._visible_sessions) < 2:
+            placeholder = QLabel("Zapisz (lub odfiltruj) co najmniej dwie sesje, aby zobaczyć trend w czasie.")
             placeholder.setObjectName("mutedText")
             self._chart_container.addWidget(placeholder)
             return
 
+        trend = build_trend_series(self._visible_sessions)
+        unit = trend["unit"]
+        points = trend["points"]
+
+        if trend["warning"]:
+            warning_label = QLabel(f"⚠ {trend['warning']}")
+            warning_label.setObjectName("mutedText")
+            warning_label.setWordWrap(True)
+            self._chart_container.addWidget(warning_label)
+
         fig, ax = base_fig(h=3.0)
 
-        dates = [point["created_at"] for point in series]
-        cep = [point["cep_50"] for point in series]
-        accuracy = [point["accuracy_radius"] for point in series]
+        dates = [point["created_at"] for point in points]
+        cep = [point["cep_50"] for point in points]
+        accuracy = [point["accuracy_radius"] for point in points]
 
-        ax.plot(dates, cep, marker="o", color=TEAL, linewidth=1.8, label="CEP 50% (px)")
-        ax.plot(dates, accuracy, marker="o", color=ACCENT, linewidth=1.8, label="Celność - offset MPI (px)")
+        ax.plot(dates, cep, marker="o", color=TEAL, linewidth=1.8, label=f"CEP 50% ({unit})")
+        ax.plot(dates, accuracy, marker="o", color=ACCENT, linewidth=1.8,
+                label=f"Celność - offset MPI ({unit})")
 
-        ax.set_ylabel("px")
+        ax.set_ylabel(unit)
         ax.set_title("CEP 50% i celność w czasie", fontweight="bold")
         ax.legend(fontsize=8, facecolor=BG, edgecolor=BORDER)
         fig.autofmt_xdate()

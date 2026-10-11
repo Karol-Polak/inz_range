@@ -23,13 +23,25 @@ class SettingsPage(QWidget):
       1. Manual target calibration (center X/Y + radius)
       2. Scale calibration (real-world mm per pixel)
 
+    The scale section works two ways:
+      - type a known real-world distance (mm) + its length on the photo (px)
+      - OR click two points on the analysed photo ("Zmierz na zdjęciu") -
+        MainWindow measures the pixel distance and fills the px field via
+        set_measured_pixel_distance(), you then just type the real mm value.
+
     Call .get_metadata()  → dict ready to pass to analyze_image()
     Call .get_scale_mm_per_px() → float or None for stats conversion
     """
 
-    def __init__(self, on_settings_changed: Optional[Callable] = None, parent=None):
+    def __init__(
+        self,
+        on_settings_changed: Optional[Callable] = None,
+        on_measure_requested: Optional[Callable] = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._on_changed = on_settings_changed
+        self._on_measure_requested = on_measure_requested
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -63,6 +75,15 @@ class SettingsPage(QWidget):
         diameter_px field is pre-filled with the detected target size.
         """
         self._diameter_px.setValue(int(round(radius_px * 2)))
+
+    def set_measured_pixel_distance(self, distance_px: float) -> None:
+        """
+        Called by MainWindow after the user clicks two points on the photo
+        ("Zmierz na zdjęciu"). Fills the px field and turns scale conversion
+        on, so the user only has to type the real-world mm distance.
+        """
+        self._diameter_px.setValue(max(1, int(round(distance_px))))
+        self._scale_enabled.setChecked(True)
 
     # ------------------------------------------------------------------
     # UI build
@@ -156,8 +177,9 @@ class SettingsPage(QWidget):
         title.setObjectName("sectionTitle")
 
         desc = QLabel(
-            "Podaj rzeczywistą średnicę tarczy w milimetrach oraz jej średnicę w pikselach "
-            "(wykrytą automatycznie lub zmierzoną). "
+            "Podaj znaną odległość rzeczywistą w milimetrach (np. średnicę tarczy) "
+            "oraz tę samą odległość w pikselach na zdjęciu - wykrytą automatycznie, "
+            "zmierzoną przyciskiem 'Zmierz na zdjęciu', albo wpisaną ręcznie. "
             "Dzięki temu statystyki będą wyświetlane w milimetrach zamiast pikselach."
         )
         desc.setObjectName("mutedText")
@@ -195,14 +217,27 @@ class SettingsPage(QWidget):
         self._scale_preview.setObjectName("statValue")
         self._update_scale_preview()
 
-        scale_layout.addWidget(self._make_field_row("Średnica tarczy (mm)", self._diameter_mm))
-        scale_layout.addWidget(self._make_field_row("Średnica tarczy (px)", self._diameter_px))
+        scale_layout.addWidget(self._make_field_row("Znana odległość rzeczywista (mm)", self._diameter_mm))
+        scale_layout.addWidget(self._make_field_row("Ta sama odległość na zdjęciu (px)", self._diameter_px))
         scale_layout.addWidget(self._make_field_row("Skala:", self._scale_preview))
 
         layout.addWidget(self._scale_inputs)
         self._scale_inputs.setEnabled(False)
 
+        # Outside _scale_inputs on purpose: clicking it should work even
+        # before "Włącz konwersję" is checked - it turns the checkbox on
+        # itself (via set_measured_pixel_distance), so it must stay usable.
+        measure_btn = QPushButton("Zmierz na zdjęciu (2 punkty)")
+        measure_btn.setObjectName("secondaryButton")
+        measure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        measure_btn.clicked.connect(self._request_measurement)
+        layout.addWidget(measure_btn)
+
         return section
+
+    def _request_measurement(self):
+        if self._on_measure_requested:
+            self._on_measure_requested()
 
     def _build_info_section(self) -> QFrame:
         section = QFrame()

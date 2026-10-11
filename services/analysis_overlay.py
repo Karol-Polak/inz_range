@@ -24,6 +24,16 @@ def draw_analysis_overlay(session: Session):
     cv2.circle(output, center, 5, (255, 255, 255), -1)
     cv2.circle(output, center, 5, (20, 32, 43), 2)
 
+    if target.aim_offset_x is not None and target.aim_offset_y is not None:
+        aim_point = (
+            int(round(target.center_x + target.aim_offset_x)),
+            int(round(target.center_y + target.aim_offset_y)),
+        )
+        # Distinct marker from the detected center, since for silhouette
+        # targets they are deliberately not the same point.
+        cv2.drawMarker(output, aim_point, (0, 140, 255), markerType=cv2.MARKER_CROSS,
+                        markerSize=22, thickness=2)
+
     for index, hit in enumerate(session.hits, start=1):
         if not hit.valid:
             continue

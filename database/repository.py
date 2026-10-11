@@ -36,6 +36,8 @@ def save_session(
         target_center_y=target.center_y,
         target_radius=target.radius,
         target_type=target.type,
+        aim_offset_x=target.aim_offset_x,
+        aim_offset_y=target.aim_offset_y,
         hit_count=stats.get("count", len(session.hits)),
         accuracy_radius=stats.get("accuracy_radius", 0.0),
         precision_radius=stats.get("precision_radius", 0.0),
@@ -113,10 +115,15 @@ def load_session(session_id: int, engine=None) -> Optional[Session]:
         center_y=training_session.target_center_y,
         radius=training_session.target_radius,
         type=training_session.target_type,
+        aim_offset_x=training_session.aim_offset_x,
+        aim_offset_y=training_session.aim_offset_y,
     )
 
     image = load_image(training_session.image_path)
-    statistics = calculate_statistics(hits)
+    # None (old rows, or a session that never had a custom aim point) means
+    # "aim at the detected center" - the same default calculate_statistics() uses.
+    aim_point = (training_session.aim_offset_x or 0.0, training_session.aim_offset_y or 0.0)
+    statistics = calculate_statistics(hits, aim_point=aim_point)
 
     return Session(
         id=training_session.id,

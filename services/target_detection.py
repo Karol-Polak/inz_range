@@ -3,6 +3,25 @@ import numpy as np
 from typing import Optional
 from model.image import Image
 from model.target import Target
+from utils.config import (
+    CIRCULAR_BLUR_KERNEL_SIZE,
+    CIRCULAR_BLUR_SIGMA,
+    CIRCULAR_CENTER_DISTANCE_PENALTY,
+    CIRCULAR_CENTER_WINDOW_MAX_FRACTION,
+    CIRCULAR_CENTER_WINDOW_MIN_FRACTION,
+    CIRCULAR_CONFIDENCE,
+    FOREGROUND_CLOSE_ITERATIONS,
+    FOREGROUND_CLOSE_KERNEL_SIZE,
+    FOREGROUND_CONFIDENCE,
+    FOREGROUND_MIN_AREA_FRACTION,
+    FOREGROUND_MIN_FILL_RATIO,
+    HOUGH_DP,
+    HOUGH_MAX_RADIUS_FRACTION,
+    HOUGH_MIN_DIST_PX,
+    HOUGH_MIN_RADIUS_FRACTION,
+    HOUGH_PARAM1,
+    HOUGH_PARAM2,
+)
 
 
 def detect_target(image: Image) -> Optional[Target]:
@@ -39,8 +58,8 @@ def _detect_dark_foreground_target(image: Image) -> Optional[Target]:
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, FOREGROUND_CLOSE_KERNEL_SIZE)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel, iterations=FOREGROUND_CLOSE_ITERATIONS)
 
     contours, _ = cv2.findContours(
         dark_mask,
@@ -55,7 +74,7 @@ def _detect_dark_foreground_target(image: Image) -> Optional[Target]:
     largest = max(contours, key=cv2.contourArea)
     area = cv2.contourArea(largest)
 
-    if area < image_area * 0.10:
+    if area < image_area * FOREGROUND_MIN_AREA_FRACTION:
         return None
 
     x, y, width, height = cv2.boundingRect(largest)
@@ -63,7 +82,7 @@ def _detect_dark_foreground_target(image: Image) -> Optional[Target]:
         return None
 
     fill_ratio = area / (width * height)
-    if fill_ratio < 0.20:
+    if fill_ratio < FOREGROUND_MIN_FILL_RATIO:
         return None
 
     center_x = x + width / 2
@@ -76,7 +95,7 @@ def _detect_dark_foreground_target(image: Image) -> Optional[Target]:
         radius=float(radius),
         rings=None,
         type="foreground",
-        confidence=0.75,
+        confidence=FOREGROUND_CONFIDENCE,
     )
 
 
@@ -84,17 +103,17 @@ def _detect_circular_target(image: Image) -> Optional[Target]:
     gray = image.processed_data
     height, width = gray.shape[:2]
 
-    blurred = cv2.GaussianBlur(gray, (9, 9), 1.5)
+    blurred = cv2.GaussianBlur(gray, CIRCULAR_BLUR_KERNEL_SIZE, CIRCULAR_BLUR_SIGMA)
 
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=100,
-        param1=100,
-        param2=20,
-        minRadius=int(min(gray.shape) * 0.20),
-        maxRadius=int(min(gray.shape) * 0.49)
+        dp=HOUGH_DP,
+        minDist=HOUGH_MIN_DIST_PX,
+        param1=HOUGH_PARAM1,
+        param2=HOUGH_PARAM2,
+        minRadius=int(min(gray.shape) * HOUGH_MIN_RADIUS_FRACTION),
+        maxRadius=int(min(gray.shape) * HOUGH_MAX_RADIUS_FRACTION)
     )
 
     if circles is None:
@@ -106,16 +125,16 @@ def _detect_circular_target(image: Image) -> Optional[Target]:
     image_center_y = height / 2
 
     for center_x, center_y, radius in circles:
-        if not (width * 0.15 <= center_x <= width * 0.85):
+        if not (width * CIRCULAR_CENTER_WINDOW_MIN_FRACTION <= center_x <= width * CIRCULAR_CENTER_WINDOW_MAX_FRACTION):
             continue
-        if not (height * 0.15 <= center_y <= height * 0.85):
+        if not (height * CIRCULAR_CENTER_WINDOW_MIN_FRACTION <= center_y <= height * CIRCULAR_CENTER_WINDOW_MAX_FRACTION):
             continue
 
         distance_from_image_center = np.hypot(
             center_x - image_center_x,
             center_y - image_center_y
         )
-        score = radius - distance_from_image_center * 0.35
+        score = radius - distance_from_image_center * CIRCULAR_CENTER_DISTANCE_PENALTY
         valid_circles.append((score, center_x, center_y, radius))
 
     if not valid_circles:
@@ -130,5 +149,5 @@ def _detect_circular_target(image: Image) -> Optional[Target]:
         radius=float(radius),
         rings=None,
         type="circular",
-        confidence=1.0,
+        confidence=CIRCULAR_CONFIDENCE,
     )

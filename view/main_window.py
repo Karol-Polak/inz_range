@@ -1,3 +1,5 @@
+import math
+
 from PyQt6.QtCore import QSize, Qt
 import cv2
 
@@ -20,13 +22,14 @@ from PyQt6.QtWidgets import (
 
 from controller.main_controller import AnalysisError, analyze_image
 from services.analysis_overlay import draw_analysis_overlay
-from services.manual_correction import map_display_point_to_image, toggle_hit_at
+from services.manual_correction import map_display_point_to_image, set_aim_point_at, toggle_hit_at
 from services.statistics import calculate_statistics
 from view.statistics_page import StatisticsPage
 from view.settings_page import SettingsPage
 from view.sessions_page import SessionsPage
 
 from database.repository import save_session
+from services.csv_export import export_session_to_csv
 
 
 class _ClickableImageLabel(QLabel):
@@ -139,6 +142,9 @@ class MainWindow(QMainWindow):
         self.current_session = None
         self.stat_value_labels = {}
         self.correction_mode_enabled = False
+        self.calibration_mode_enabled = False
+        self.calibration_points = []
+        self.aim_point_mode_enabled = False
 
         self._create_actions()
         self._build_layout()
@@ -232,7 +238,7 @@ class MainWindow(QMainWindow):
         self.sessions_page = SessionsPage(on_session_loaded=self._load_session_into_analysis)
         self.pages.addWidget(self.sessions_page)
 
-        self.settings_page = SettingsPage()
+        self.settings_page = SettingsPage(on_measure_requested=self._start_two_point_calibration)
         self.pages.addWidget(self.settings_page)
 
         layout.addWidget(self.pages, 1)
@@ -321,9 +327,17 @@ class MainWindow(QMainWindow):
         self.correction_toggle.setEnabled(False)
         self.correction_toggle.clicked.connect(self._toggle_correction_mode)
 
+        self.aim_point_toggle = QPushButton("Ustaw punkt celowania")
+        self.aim_point_toggle.setObjectName("secondaryButton")
+        self.aim_point_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.aim_point_toggle.setCheckable(True)
+        self.aim_point_toggle.setEnabled(False)
+        self.aim_point_toggle.clicked.connect(self._toggle_aim_point_mode)
+
         toolbar.addWidget(load_button)
         toolbar.addWidget(self.analyze_button)
         toolbar.addWidget(self.correction_toggle)
+        toolbar.addWidget(self.aim_point_toggle)
         toolbar.addStretch(1)
 
         layout.addWidget(title)
@@ -399,9 +413,16 @@ class MainWindow(QMainWindow):
         self.save_session_button.setEnabled(False)
         self.save_session_button.clicked.connect(self._save_current_session)
 
+        self.export_csv_button = QPushButton("Eksportuj CSV")
+        self.export_csv_button.setObjectName("secondaryButton")
+        self.export_csv_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_csv_button.setEnabled(False)
+        self.export_csv_button.clicked.connect(self._export_current_session_csv)
+
         layout.addWidget(self.weapon_type_input)
         layout.addWidget(self.distance_input)
         layout.addWidget(self.save_session_button)
+        layout.addWidget(self.export_csv_button)
 
         return section
 
@@ -454,8 +475,13 @@ class MainWindow(QMainWindow):
         self.current_session = None
         self.analyze_button.setEnabled(True)
         self._set_correction_mode(False)
+        self._set_aim_point_mode(False)
+        self.calibration_mode_enabled = False
+        self.calibration_points = []
         self.correction_toggle.setEnabled(False)
+        self.aim_point_toggle.setEnabled(False)
         self.save_session_button.setEnabled(False)
+        self.export_csv_button.setEnabled(False)
         self.weapon_type_input.setText("")
         self.distance_input.setValue(0.0)
         self.status_label.setText("Zdjecie wczytane")
@@ -508,19 +534,25 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Analiza gotowa")
             self.analysis_note.setText(self._build_analysis_summary(session))
             self.correction_toggle.setEnabled(True)
+            self.aim_point_toggle.setEnabled(True)
             self.save_session_button.setEnabled(True)
+            self.export_csv_button.setEnabled(True)
 
         except AnalysisError as error:
             self.status_label.setText("Wymagana kalibracja")
             self.analysis_note.setText("Nie udalo sie automatycznie wykryc tarczy.")
             self.correction_toggle.setEnabled(False)
+            self.aim_point_toggle.setEnabled(False)
             self.save_session_button.setEnabled(False)
+            self.export_csv_button.setEnabled(False)
             QMessageBox.warning(self, "Analiza przerwana", str(error))
         except Exception as error:
             self.status_label.setText("Blad analizy")
             self.analysis_note.setText("Analiza nie mogla zostac zakonczona.")
             self.correction_toggle.setEnabled(False)
+            self.aim_point_toggle.setEnabled(False)
             self.save_session_button.setEnabled(False)
+            self.export_csv_button.setEnabled(False)
             QMessageBox.critical(self, "Blad analizy", str(error))
         finally:
             self.analyze_button.setEnabled(self.selected_image_path is not None)
@@ -531,6 +563,9 @@ class MainWindow(QMainWindow):
     def _set_correction_mode(self, enabled: bool):
         self.correction_mode_enabled = enabled
         self.correction_toggle.setChecked(enabled)
+        if enabled:
+            self.calibration_mode_enabled = False  # the modes don't mix on the same click
+            self._set_aim_point_mode(False)
 
         if enabled:
             self.analysis_note.setText(
@@ -540,8 +575,46 @@ class MainWindow(QMainWindow):
         elif self.current_session is not None:
             self.analysis_note.setText(self._build_analysis_summary(self.current_session))
 
+    def _toggle_aim_point_mode(self):
+        self._set_aim_point_mode(self.aim_point_toggle.isChecked())
+
+    def _set_aim_point_mode(self, enabled: bool):
+        self.aim_point_mode_enabled = enabled
+        self.aim_point_toggle.setChecked(enabled)
+        if enabled:
+            self.calibration_mode_enabled = False
+            self._set_correction_mode(False)
+
+        if enabled:
+            self.analysis_note.setText(
+                "Tryb punktu celowania: kliknij miejsce, w kture faktycznie celowano "
+                "(np. środek strefy A na sylwetce) - celność bedzie liczona wzgledem niego."
+            )
+        elif self.current_session is not None:
+            self.analysis_note.setText(self._build_analysis_summary(self.current_session))
+
+    def _start_two_point_calibration(self):
+        """Called by SettingsPage's 'Zmierz na zdjęciu' button."""
+        if self.current_session is None:
+            QMessageBox.information(
+                self,
+                "Najpierw analiza",
+                "Uruchom najpierw analize zdjecia, aby moc zmierzyc odleglosc na nim.",
+            )
+            return
+
+        self._set_correction_mode(False)
+        self._set_aim_point_mode(False)
+        self.calibration_mode_enabled = True
+        self.calibration_points = []
+        self._select_page(0)
+        self.analysis_note.setText(
+            "Kalibracja skali: kliknij dwa punkty na zdjeciu, miedzy ktorymi znasz "
+            "rzeczywista odleglosc."
+        )
+
     def _handle_image_click(self, label_x: float, label_y: float):
-        if not self.correction_mode_enabled or self.current_session is None:
+        if self.current_session is None:
             return
 
         pixmap = self.image_preview.pixmap()
@@ -559,10 +632,67 @@ class MainWindow(QMainWindow):
         if image_point is None:
             return
 
+        if self.calibration_mode_enabled:
+            self._handle_calibration_click(image_point)
+            return
+
+        if self.aim_point_mode_enabled:
+            self._handle_aim_point_click(image_point)
+            return
+
+        if not self.correction_mode_enabled:
+            return
+
         session = self.current_session
         session.hits = toggle_hit_at(session.hits, session.target, image_point)
         session.statistics = calculate_statistics(session.hits)
         self._after_hits_changed(session)
+
+    def _handle_aim_point_click(self, image_point):
+        session = self.current_session
+        session.target = set_aim_point_at(session.target, image_point)
+        aim_point = (session.target.aim_offset_x, session.target.aim_offset_y)
+        session.statistics = calculate_statistics(session.hits, aim_point=aim_point)
+
+        self._set_aim_point_mode(False)
+        self._after_hits_changed(session)
+
+    def _handle_calibration_click(self, image_point):
+        self.calibration_points.append(image_point)
+        self._redraw_with_calibration_markers()
+
+        if len(self.calibration_points) < 2:
+            self.analysis_note.setText("Kalibracja skali: kliknij drugi punkt.")
+            return
+
+        (x1, y1), (x2, y2) = self.calibration_points
+        distance_px = math.hypot(x2 - x1, y2 - y1)
+
+        self.calibration_mode_enabled = False
+        self.calibration_points = []
+
+        self.settings_page.set_measured_pixel_distance(distance_px)
+        self._after_hits_changed(self.current_session)  # redraws without the calibration crosses
+        self.analysis_note.setText(self._build_analysis_summary(self.current_session))
+
+        QMessageBox.information(
+            self,
+            "Zmierzono odleglosc",
+            f"Zmierzona odleglosc: {distance_px:.1f} px. Wpisz odpowiadajaca jej "
+            f"odleglosc rzeczywista w mm w zakladce Ustawienia.",
+        )
+        self._select_page(3)
+
+    def _redraw_with_calibration_markers(self):
+        overlay = draw_analysis_overlay(self.current_session)
+        for x, y in self.calibration_points:
+            center = (int(round(x)), int(round(y)))
+            cv2.drawMarker(
+                overlay, center, (0, 140, 255),
+                markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2,
+            )
+        self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
+        self._update_preview_pixmap()
 
     def _after_hits_changed(self, session):
         overlay = draw_analysis_overlay(session)
@@ -596,14 +726,34 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Blad zapisu", str(error))
 
+    def _export_current_session_csv(self):
+        if self.current_session is None:
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Eksportuj sesje do CSV", "", "CSV (*.csv)",
+        )
+        if not file_path:
+            return
+
+        scale = self.settings_page.get_scale_mm_per_px()
+
+        try:
+            export_session_to_csv(self.current_session, file_path, scale_mm_per_px=scale)
+        except Exception as error:
+            QMessageBox.critical(self, "Blad eksportu", str(error))
+
     def _load_session_into_analysis(self, session):
         """Called by SessionsPage when the user loads a past session."""
         self.current_session = session
         self.selected_image_path = session.image.path
         self.analyze_button.setEnabled(True)
         self.correction_toggle.setEnabled(True)
+        self.aim_point_toggle.setEnabled(True)
         self.save_session_button.setEnabled(True)
+        self.export_csv_button.setEnabled(True)
         self._set_correction_mode(False)
+        self._set_aim_point_mode(False)
 
         overlay = draw_analysis_overlay(session)
         self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
