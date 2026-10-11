@@ -44,7 +44,6 @@ CIRCULAR_CONFIDENCE = 1.0
 # być trafienia)
 # ---------------------------------------------------------------------------
 CENTRAL_MASK_DARK_THRESHOLD = 245            # piksel uznany za "ciemny" (część tarczy), jeśli < tej wartości
-CENTRAL_MASK_SATURATION_THRESHOLD = 40       # albo wystarczająco nasycony kolorystycznie (HSV S)
 CENTRAL_MASK_CLOSE_KERNEL_SIZE = (17, 17)
 CENTRAL_MASK_CLOSE_ITERATIONS = 1
 CENTRAL_MASK_MIN_COMPONENT_AREA_FRACTION = 0.0004  # odrzuca drobne, przypadkowe plamki

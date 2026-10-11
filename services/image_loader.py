@@ -2,7 +2,7 @@ import os
 import cv2
 from model.image import Image
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".bmp"}
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".webp"}
 
 def load_image(path: str) -> Image:
     """

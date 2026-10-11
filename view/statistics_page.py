@@ -36,6 +36,7 @@ from view.chart_style import (
 
 def _make_scatter(session: Session) -> _Canvas:
     hits = [h for h in session.hits if h.valid]
+    target = session.target
     fig, ax = _base_fig(h=4.0)
 
     if hits:
@@ -66,6 +67,14 @@ def _make_scatter(session: Session) -> _Canvas:
                 (mpi_x, mpi_y), cep, fill=False,
                 edgecolor=_TEAL, linewidth=1.5, linestyle="--", label=f"CEP 50% ({cep:.0f} px)",
             ))
+
+        aim_x = target.aim_offset_x or 0.0
+        aim_y = target.aim_offset_y or 0.0
+        if aim_x != 0.0 or aim_y != 0.0:
+            # Punkt celowania różni się od środka tarczy (np. sylwetka) -
+            # pokazujemy go osobno, tak jak na podglądzie analizy.
+            ax.plot(aim_x, aim_y, "*", color="#ff8c00", markersize=14, markeredgewidth=1,
+                    markeredgecolor=_TEXT, zorder=5, label="Punkt celowania")
 
         for i, (x, y) in enumerate(zip(xs, ys), 1):
             ax.annotate(str(i), (x, y), textcoords="offset points",
@@ -259,7 +268,7 @@ class StatisticsPage(QWidget):
 
         cards_data = [
             ("Liczba trafień",   fmt(stats.get("count", 0), 0),      ""),
-            ("Celność (MPI-środek)", fmt(stats.get("accuracy_radius", 0)), unit),
+            ("Celność (MPI od punktu celowania)", fmt(stats.get("accuracy_radius", 0)), unit),
             ("Precyzja (śr. od MPI)", fmt(stats.get("precision_radius", 0)), unit),
             ("Odch. std. precyzji",  fmt(stats.get("precision_std", 0)),    unit),
             ("CEP 50%",          fmt(stats.get("cep_50", 0)),         unit),

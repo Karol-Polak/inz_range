@@ -39,12 +39,20 @@ class SessionsPage(QWidget):
         self._visible_sessions: List[TrainingSession] = []
         self._filter_query = ""
         self._chart_canvas: Optional[Canvas] = None
+        self._analysis_lock = False
         self._build_ui()
         self.refresh()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def set_analysis_lock(self, locked: bool) -> None:
+        """Called by MainWindow while a background analysis is running, so
+        loading a different session can't race with it overwriting
+        current_session."""
+        self._analysis_lock = locked
+        self._on_selection_changed()
 
     def refresh(self):
         self._sessions = list_sessions()
@@ -201,7 +209,7 @@ class SessionsPage(QWidget):
 
     def _on_selection_changed(self):
         ids = self._selected_ids()
-        self._load_button.setEnabled(len(ids) == 1)
+        self._load_button.setEnabled(len(ids) == 1 and not self._analysis_lock)
         self._delete_button.setEnabled(len(ids) == 1)
         self._update_comparison()
 
@@ -299,7 +307,7 @@ class SessionsPage(QWidget):
         )
 
         for label, metric in (
-            ("Celność (MPI-środek)", "accuracy_radius"),
+            ("Celność (MPI od punktu celowania)", "accuracy_radius"),
             ("Precyzja (śr. od MPI)", "precision_radius"),
             ("CEP 50%", "cep_50"),
         ):
@@ -348,7 +356,7 @@ class SessionsPage(QWidget):
 
         ax.plot(dates, cep, marker="o", color=TEAL, linewidth=1.8, label=f"CEP 50% ({unit})")
         ax.plot(dates, accuracy, marker="o", color=ACCENT, linewidth=1.8,
-                label=f"Celność - offset MPI ({unit})")
+                label=f"Celność - MPI od punktu celowania ({unit})")
 
         ax.set_ylabel(unit)
         ax.set_title("CEP 50% i celność w czasie", fontweight="bold")

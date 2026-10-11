@@ -85,6 +85,11 @@ class SettingsPage(QWidget):
         self._diameter_px.setValue(max(1, int(round(distance_px))))
         self._scale_enabled.setChecked(True)
 
+    def set_measure_button_enabled(self, enabled: bool) -> None:
+        """Called by MainWindow to lock the 'Zmierz na zdjęciu' button while
+        a background analysis is running (it needs self.current_session)."""
+        self._measure_button.setEnabled(enabled)
+
     # ------------------------------------------------------------------
     # UI build
     # ------------------------------------------------------------------
@@ -227,11 +232,11 @@ class SettingsPage(QWidget):
         # Outside _scale_inputs on purpose: clicking it should work even
         # before "Włącz konwersję" is checked - it turns the checkbox on
         # itself (via set_measured_pixel_distance), so it must stay usable.
-        measure_btn = QPushButton("Zmierz na zdjęciu (2 punkty)")
-        measure_btn.setObjectName("secondaryButton")
-        measure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        measure_btn.clicked.connect(self._request_measurement)
-        layout.addWidget(measure_btn)
+        self._measure_button = QPushButton("Zmierz na zdjęciu (2 punkty)")
+        self._measure_button.setObjectName("secondaryButton")
+        self._measure_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._measure_button.clicked.connect(self._request_measurement)
+        layout.addWidget(self._measure_button)
 
         return section
 

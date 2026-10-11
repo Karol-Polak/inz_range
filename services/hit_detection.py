@@ -23,7 +23,6 @@ from utils.config import (
     CENTRAL_MASK_CLOSE_KERNEL_SIZE,
     CENTRAL_MASK_DARK_THRESHOLD,
     CENTRAL_MASK_MIN_COMPONENT_AREA_FRACTION,
-    CENTRAL_MASK_SATURATION_THRESHOLD,
     DEDUP_DISTANCE_PX,
     DIGIT_BRIGHT_RANGE_MAX,
     DIGIT_BRIGHT_RANGE_MIN,
@@ -173,14 +172,9 @@ def _build_target_context_mask(gray, target: Target):
 
 
 def _build_central_circular_target_mask(gray, target: Target):
-    image_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-
-    dark_or_colored = np.uint8(
-        (gray < CENTRAL_MASK_DARK_THRESHOLD) | (hsv[:, :, 1] > CENTRAL_MASK_SATURATION_THRESHOLD)
-    ) * 255
-    dark_or_colored = cv2.morphologyEx(
-        dark_or_colored,
+    dark = np.uint8(gray < CENTRAL_MASK_DARK_THRESHOLD) * 255
+    dark = cv2.morphologyEx(
+        dark,
         cv2.MORPH_CLOSE,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, CENTRAL_MASK_CLOSE_KERNEL_SIZE),
         iterations=CENTRAL_MASK_CLOSE_ITERATIONS
@@ -191,7 +185,7 @@ def _build_central_circular_target_mask(gray, target: Target):
     center_limit = target.radius * CENTRAL_MASK_CENTER_LIMIT_FRACTION
 
     component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        dark_or_colored,
+        dark,
         connectivity=8
     )
 

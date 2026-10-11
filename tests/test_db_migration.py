@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from sqlmodel import create_engine
 
-from database.db import create_db
+from database.db import _migrate_legacy_cwd_db_if_present, _resolve_db_path, create_db
 from database.repository import load_session, save_session
 from model.hit import Hit
 from model.image import Image
@@ -193,3 +193,87 @@ def test_accuracy_after_hit_correction_matches_between_save_and_load(tmp_path, s
     loaded = load_session(saved.id, engine=engine)
 
     assert saved.accuracy_radius == loaded.statistics["accuracy_radius"]
+
+
+# ---------------------------------------------------------------------------
+# Item 4: DB anchored to the project root, not the CWD - legacy-file
+# migration and the INZ_RANGE_DB override.
+# ---------------------------------------------------------------------------
+
+def test_migrate_legacy_cwd_db_copies_when_target_missing(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy_cwd"
+    legacy_dir.mkdir()
+    monkeypatch.chdir(legacy_dir)
+
+    legacy_db = legacy_dir / "training_sessions.db"
+    legacy_db.write_bytes(b"old-sqlite-bytes")
+
+    target_path = tmp_path / "anchored" / "training_sessions.db"
+    target_path.parent.mkdir()
+
+    _migrate_legacy_cwd_db_if_present(target_path)
+
+    assert target_path.exists()
+    assert target_path.read_bytes() == b"old-sqlite-bytes"
+    assert legacy_db.exists()  # original must survive untouched
+    assert legacy_db.read_bytes() == b"old-sqlite-bytes"
+
+
+def test_migrate_legacy_cwd_db_does_not_overwrite_existing_target(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy_cwd"
+    legacy_dir.mkdir()
+    monkeypatch.chdir(legacy_dir)
+
+    legacy_db = legacy_dir / "training_sessions.db"
+    legacy_db.write_bytes(b"old-bytes")
+
+    target_path = tmp_path / "anchored" / "training_sessions.db"
+    target_path.parent.mkdir()
+    target_path.write_bytes(b"current-bytes-must-survive")
+
+    _migrate_legacy_cwd_db_if_present(target_path)
+
+    assert target_path.read_bytes() == b"current-bytes-must-survive"
+
+
+def test_migrate_legacy_cwd_db_does_nothing_when_no_legacy_file(tmp_path, monkeypatch):
+    empty_dir = tmp_path / "empty_cwd"
+    empty_dir.mkdir()
+    monkeypatch.chdir(empty_dir)
+
+    target_path = tmp_path / "anchored" / "training_sessions.db"
+    target_path.parent.mkdir()
+
+    _migrate_legacy_cwd_db_if_present(target_path)
+
+    assert not target_path.exists()
+
+
+def test_migrate_legacy_cwd_db_is_a_noop_when_cwd_equals_target_dir(tmp_path, monkeypatch):
+    # The common case: CWD is the project root itself, so the "legacy" path
+    # and the anchored path are literally the same file - nothing to copy.
+    monkeypatch.chdir(tmp_path)
+    same_file = tmp_path / "training_sessions.db"
+    same_file.write_bytes(b"only-copy")
+
+    _migrate_legacy_cwd_db_if_present(same_file)
+
+    assert same_file.read_bytes() == b"only-copy"
+
+
+def test_resolve_db_path_uses_env_override_when_set(tmp_path, monkeypatch):
+    custom_path = tmp_path / "custom_location" / "my.db"
+    monkeypatch.setenv("INZ_RANGE_DB", str(custom_path))
+
+    resolved = _resolve_db_path()
+
+    assert resolved == custom_path.resolve()
+
+
+def test_resolve_db_path_falls_back_to_project_root_without_override(monkeypatch):
+    monkeypatch.delenv("INZ_RANGE_DB", raising=False)
+
+    resolved = _resolve_db_path()
+
+    assert resolved.name == "training_sessions.db"
+    assert (resolved.parent / "main.py").exists()  # anchored at the project root

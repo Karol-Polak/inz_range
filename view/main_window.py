@@ -1,10 +1,11 @@
 import math
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, pyqtSignal
 import cv2
 
 from PyQt6.QtGui import QAction, QFont, QImage, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -126,6 +127,36 @@ class _NavItem(QFrame):
             )
 
 
+class _AnalysisWorker(QObject):
+    """
+    Runs analyze_image() on a background QThread so the GUI thread stays
+    responsive. Must not touch any widget directly - it only emits signals;
+    all UI updates happen in slots running on the GUI thread (connected in
+    MainWindow._start_analysis_worker).
+    """
+
+    finished = pyqtSignal(object)       # Session
+    analysis_error = pyqtSignal(str)    # AnalysisError (needs manual calibration)
+    unexpected_error = pyqtSignal(str)  # anything else
+
+    def __init__(self, path: str, metadata: dict):
+        super().__init__()
+        self._path = path
+        self._metadata = metadata
+
+    def run(self):
+        try:
+            session = analyze_image(self._path, self._metadata)
+        except AnalysisError as error:
+            self.analysis_error.emit(str(error))
+            return
+        except Exception as error:
+            self.unexpected_error.emit(str(error))
+            return
+
+        self.finished.emit(session)
+
+
 class MainWindow(QMainWindow):
     """Main application shell with navigation prepared for future modules."""
 
@@ -145,6 +176,10 @@ class MainWindow(QMainWindow):
         self.calibration_mode_enabled = False
         self.calibration_points = []
         self.aim_point_mode_enabled = False
+
+        self._analysis_thread = None
+        self._analysis_worker = None
+        self._analysis_in_progress = False
 
         self._create_actions()
         self._build_layout()
@@ -309,10 +344,10 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(12)
 
-        load_button = QPushButton("Wczytaj zdjecie")
-        load_button.setObjectName("primaryButton")
-        load_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        load_button.clicked.connect(self._choose_image)
+        self.load_image_button = QPushButton("Wczytaj zdjecie")
+        self.load_image_button.setObjectName("primaryButton")
+        self.load_image_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.load_image_button.clicked.connect(self._choose_image)
 
         self.analyze_button = QPushButton("Analizuj")
         self.analyze_button.setObjectName("secondaryButton")
@@ -334,7 +369,7 @@ class MainWindow(QMainWindow):
         self.aim_point_toggle.setEnabled(False)
         self.aim_point_toggle.clicked.connect(self._toggle_aim_point_mode)
 
-        toolbar.addWidget(load_button)
+        toolbar.addWidget(self.load_image_button)
         toolbar.addWidget(self.analyze_button)
         toolbar.addWidget(self.correction_toggle)
         toolbar.addWidget(self.aim_point_toggle)
@@ -446,9 +481,24 @@ class MainWindow(QMainWindow):
         return row, result
 
     def _select_page(self, index):
+        if index != 0:
+            # Leaving the analysis page mid-calibration would otherwise leave
+            # a stale first click waiting - the next click after coming back
+            # would be silently treated as the second calibration point.
+            self._cancel_calibration_if_active()
+
         self.pages.setCurrentIndex(index)
         for button_index, button in enumerate(self.nav_buttons):
             button.setChecked(button_index == index)
+
+    def _cancel_calibration_if_active(self):
+        if not self.calibration_mode_enabled:
+            return
+
+        self.calibration_mode_enabled = False
+        self.calibration_points = []
+        if self.current_session is not None:
+            self.analysis_note.setText(self._build_analysis_summary(self.current_session))
 
     def _choose_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -476,8 +526,7 @@ class MainWindow(QMainWindow):
         self.analyze_button.setEnabled(True)
         self._set_correction_mode(False)
         self._set_aim_point_mode(False)
-        self.calibration_mode_enabled = False
-        self.calibration_points = []
+        self._cancel_calibration_if_active()
         self.correction_toggle.setEnabled(False)
         self.aim_point_toggle.setEnabled(False)
         self.save_session_button.setEnabled(False)
@@ -507,55 +556,121 @@ class MainWindow(QMainWindow):
         if not self.selected_image_path:
             return
 
-        self.status_label.setText("Analiza...")
-        self.analyze_button.setEnabled(False)
+        if self._analysis_in_progress:
+            return  # guard against a second overlapping analysis
 
-        try:
-            metadata = self.settings_page.get_metadata()
-            session = analyze_image(self.selected_image_path, metadata=metadata)
-            overlay = draw_analysis_overlay(session)
-            self.current_session = session
+        self._analysis_in_progress = True
+        self._set_controls_locked_during_analysis(True)
+        self.status_label.setText("Analizuję...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
-            # Update image preview
-            self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
-            self._update_preview_pixmap()
+        metadata = self.settings_page.get_metadata()
+        self._start_analysis_worker(self.selected_image_path, metadata)
 
-            # Update quick stats on analysis page
-            self._update_statistics(session.statistics)
+    def _start_analysis_worker(self, path: str, metadata: dict):
+        self._analysis_worker = _AnalysisWorker(path, metadata)
+        self._analysis_thread = QThread(self)
+        self._analysis_worker.moveToThread(self._analysis_thread)
 
-            # Push session to statistics page
-            scale = self.settings_page.get_scale_mm_per_px()
-            self.statistics_page.set_session(session, scale_mm_per_px=scale)
+        self._analysis_thread.started.connect(self._analysis_worker.run)
+        self._analysis_worker.finished.connect(self._on_analysis_finished)
+        self._analysis_worker.analysis_error.connect(self._on_analysis_error)
+        self._analysis_worker.unexpected_error.connect(self._on_analysis_unexpected_error)
 
-            # Update settings page with detected radius for scale calibration
-            if session.target and session.target.radius:
-                self.settings_page.set_detected_radius(session.target.radius)
+        # Whichever outcome fires, stop the thread; _on_analysis_thread_finished
+        # (connected below) does the common cleanup regardless of outcome.
+        self._analysis_worker.finished.connect(self._analysis_thread.quit)
+        self._analysis_worker.analysis_error.connect(self._analysis_thread.quit)
+        self._analysis_worker.unexpected_error.connect(self._analysis_thread.quit)
+        self._analysis_thread.finished.connect(self._on_analysis_thread_finished)
 
-            self.status_label.setText("Analiza gotowa")
-            self.analysis_note.setText(self._build_analysis_summary(session))
-            self.correction_toggle.setEnabled(True)
-            self.aim_point_toggle.setEnabled(True)
-            self.save_session_button.setEnabled(True)
-            self.export_csv_button.setEnabled(True)
+        self._analysis_thread.start()
 
-        except AnalysisError as error:
-            self.status_label.setText("Wymagana kalibracja")
-            self.analysis_note.setText("Nie udalo sie automatycznie wykryc tarczy.")
-            self.correction_toggle.setEnabled(False)
-            self.aim_point_toggle.setEnabled(False)
-            self.save_session_button.setEnabled(False)
-            self.export_csv_button.setEnabled(False)
-            QMessageBox.warning(self, "Analiza przerwana", str(error))
-        except Exception as error:
-            self.status_label.setText("Blad analizy")
-            self.analysis_note.setText("Analiza nie mogla zostac zakonczona.")
-            self.correction_toggle.setEnabled(False)
-            self.aim_point_toggle.setEnabled(False)
-            self.save_session_button.setEnabled(False)
-            self.export_csv_button.setEnabled(False)
-            QMessageBox.critical(self, "Blad analizy", str(error))
-        finally:
-            self.analyze_button.setEnabled(self.selected_image_path is not None)
+    def _set_controls_locked_during_analysis(self, locked: bool):
+        """
+        Controls that must not be touched while a background analysis owns
+        self.current_session (or, for load_image_button/analyze_button, that
+        would start a conflicting second operation). Re-enabled unconditionally
+        once the worker thread finishes, regardless of success/failure.
+
+        correction_toggle/aim_point_toggle/save_session_button/export_csv_button
+        are NOT handled here - they depend on the analysis OUTCOME, so the
+        three result slots (_on_analysis_finished/_on_analysis_error/
+        _on_analysis_unexpected_error) set them explicitly, exactly like the
+        old synchronous code did.
+        """
+
+        enabled = not locked
+        self.load_image_button.setEnabled(enabled)
+        self.analyze_button.setEnabled(enabled and self.selected_image_path is not None)
+        self.settings_page.set_measure_button_enabled(enabled)
+        self.sessions_page.set_analysis_lock(locked)
+
+    def _on_analysis_finished(self, session):
+        overlay = draw_analysis_overlay(session)
+        self.current_session = session
+
+        # Update image preview
+        self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
+        self._update_preview_pixmap()
+
+        # Update quick stats on analysis page
+        self._update_statistics(session.statistics)
+
+        # Push session to statistics page
+        scale = self.settings_page.get_scale_mm_per_px()
+        self.statistics_page.set_session(session, scale_mm_per_px=scale)
+
+        # Update settings page with detected radius for scale calibration
+        if session.target and session.target.radius:
+            self.settings_page.set_detected_radius(session.target.radius)
+
+        self.status_label.setText("Analiza gotowa")
+        self.analysis_note.setText(self._build_analysis_summary(session))
+        self.correction_toggle.setEnabled(True)
+        self.aim_point_toggle.setEnabled(True)
+        self.save_session_button.setEnabled(True)
+        self.export_csv_button.setEnabled(True)
+
+    def _on_analysis_error(self, message: str):
+        self.status_label.setText("Wymagana kalibracja")
+        self.analysis_note.setText("Nie udalo sie automatycznie wykryc tarczy.")
+        self.correction_toggle.setEnabled(False)
+        self.aim_point_toggle.setEnabled(False)
+        self.save_session_button.setEnabled(False)
+        self.export_csv_button.setEnabled(False)
+        QMessageBox.warning(self, "Analiza przerwana", message)
+
+    def _on_analysis_unexpected_error(self, message: str):
+        self.status_label.setText("Blad analizy")
+        self.analysis_note.setText("Analiza nie mogla zostac zakonczona.")
+        self.correction_toggle.setEnabled(False)
+        self.aim_point_toggle.setEnabled(False)
+        self.save_session_button.setEnabled(False)
+        self.export_csv_button.setEnabled(False)
+        QMessageBox.critical(self, "Blad analizy", message)
+
+    def _on_analysis_thread_finished(self):
+        """Runs once per analysis, regardless of success/error - common
+        cleanup only. Outcome-specific UI state is handled by the three
+        _on_analysis_* slots above, which fire before this one."""
+
+        QApplication.restoreOverrideCursor()
+        self._set_controls_locked_during_analysis(False)
+        self._analysis_in_progress = False
+
+        if self._analysis_worker is not None:
+            self._analysis_worker.deleteLater()
+            self._analysis_worker = None
+        if self._analysis_thread is not None:
+            self._analysis_thread.deleteLater()
+            self._analysis_thread = None
+
+    def closeEvent(self, event):
+        if self._analysis_thread is not None and self._analysis_thread.isRunning():
+            self._analysis_thread.quit()
+            self._analysis_thread.wait()
+        super().closeEvent(event)
 
     def _toggle_correction_mode(self):
         self._set_correction_mode(self.correction_toggle.isChecked())
@@ -753,6 +868,7 @@ class MainWindow(QMainWindow):
         self.export_csv_button.setEnabled(True)
         self._set_correction_mode(False)
         self._set_aim_point_mode(False)
+        self._cancel_calibration_if_active()
 
         overlay = draw_analysis_overlay(session)
         self.original_preview_pixmap = self._pixmap_from_bgr_image(overlay)
