@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
+import matplotlib.dates as mdates
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,8 +25,12 @@ from database.models import TrainingSession
 from database.repository import delete_session, list_sessions, load_session
 from model.session import Session
 from services.csv_export import export_sessions_list_to_csv
-from services.session_trends import build_trend_series, compare_sessions, filter_sessions
-from view.chart_style import ACCENT, BG, BORDER, TEAL, TEAL2, Canvas, base_fig
+from services.session_trends import build_trend_series, compare_sessions, filter_sessions, unit_context
+from services.units import DECIMALS, LengthUnit, convert_length, default_unit
+from view import theme
+from view.number_format import fmt_general, fmt_num
+from view.chart_style import AXIS, BG, PRIMARY, SECONDARY, Canvas, base_fig
+from view.unit_selector import UnitSelector
 
 
 class SessionsPage(QWidget):
@@ -40,6 +47,9 @@ class SessionsPage(QWidget):
         self._filter_query = ""
         self._chart_canvas: Optional[Canvas] = None
         self._analysis_lock = False
+        # Requested unit for trend + comparison; each block falls back on its
+        # own (services.units.common_unit) when a session lacks scale/distance.
+        self._unit = LengthUnit.MM
         self._build_ui()
         self.refresh()
 
@@ -79,18 +89,18 @@ class SessionsPage(QWidget):
     def _build_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(22)
+        layout.setSpacing(theme.SPACE_L)
 
         layout.addWidget(self._build_list_panel(), 1)
         layout.addWidget(self._build_details_panel(), 2)
 
     def _build_list_panel(self) -> QFrame:
         panel = QFrame()
-        panel.setObjectName("imagePanel")
+        panel.setObjectName("panel")
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(theme.SPACE_L, theme.SPACE_L, theme.SPACE_L, theme.SPACE_L)
+        layout.setSpacing(theme.SPACE_S)
 
         title = QLabel("Zapisane sesje")
         title.setObjectName("sectionTitle")
@@ -108,11 +118,14 @@ class SessionsPage(QWidget):
 
         self._list_widget = QListWidget()
         self._list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._list_widget.setWordWrap(True)
+        self._list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)  # re-wrap rows on resize
+        self._list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self._list_widget, 1)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
+        buttons = QGridLayout()
+        buttons.setSpacing(theme.SPACE_S)
 
         self._load_button = QPushButton("Wczytaj")
         self._load_button.setObjectName("secondaryButton")
@@ -136,32 +149,49 @@ class SessionsPage(QWidget):
         export_button.setCursor(Qt.CursorShape.PointingHandCursor)
         export_button.clicked.connect(self._export_list_csv)
 
-        buttons.addWidget(self._load_button)
-        buttons.addWidget(self._delete_button)
-        buttons.addWidget(refresh_button)
-        buttons.addWidget(export_button)
+        buttons.addWidget(self._load_button, 0, 0)
+        buttons.addWidget(self._delete_button, 0, 1)
+        buttons.addWidget(refresh_button, 1, 0)
+        buttons.addWidget(export_button, 1, 1)
         layout.addLayout(buttons)
 
         return panel
 
     def _build_details_panel(self) -> QFrame:
         panel = QFrame()
-        panel.setObjectName("imagePanel")
+        panel.setObjectName("panel")
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(16)
+        layout.setContentsMargins(theme.SPACE_L, theme.SPACE_L, theme.SPACE_L, theme.SPACE_L)
+        layout.setSpacing(theme.SPACE_M)
 
+        header = QHBoxLayout()
         trend_title = QLabel("Trend w czasie (CEP 50% i celność)")
         trend_title.setObjectName("sectionTitle")
-        layout.addWidget(trend_title)
+        header.addWidget(trend_title)
+        header.addStretch(1)
+        unit_label = QLabel("Jednostka")
+        unit_label.setObjectName("statLabel")
+        header.addWidget(unit_label)
+        header.addSpacing(theme.SPACE_S)
+        self._unit_selector = UnitSelector(self._unit)
+        self._unit_selector.unit_changed.connect(self._on_unit_changed)
+        header.addWidget(self._unit_selector)
+        layout.addLayout(header)
 
         self._chart_container = QVBoxLayout()
         layout.addLayout(self._chart_container)
 
         comparison_title = QLabel("Porównanie dwóch sesji")
         comparison_title.setObjectName("sectionTitle")
+        layout.addSpacing(theme.SPACE_S)
         layout.addWidget(comparison_title)
+
+        self._comparison_warning = QLabel()
+        self._comparison_warning.setObjectName("warningText")
+        self._comparison_warning.setWordWrap(True)
+        self._comparison_warning.hide()
+        layout.addWidget(self._comparison_warning)
 
         self._comparison_label = QLabel()
         self._comparison_label.setObjectName("mutedText")
@@ -181,16 +211,16 @@ class SessionsPage(QWidget):
         for session in self._visible_sessions:
             label = (
                 f"{session.created_at:%Y-%m-%d %H:%M} — "
-                f"{session.hit_count} strzałów, CEP {session.cep_50:.0f}px"
+                f"trafienia: {session.hit_count}, CEP {self._list_cep(session)}"
             )
 
             extras = []
             if session.weapon_type:
                 extras.append(session.weapon_type)
             if session.distance_m:
-                extras.append(f"{session.distance_m:g} m")
+                extras.append(f"{fmt_general(session.distance_m)} m")
             if session.scale_mm_per_px:
-                extras.append(f"{session.scale_mm_per_px:.3f} mm/px")
+                extras.append(f"{fmt_num(session.scale_mm_per_px, 3)} mm/px")
             if session.notes:
                 note = session.notes if len(session.notes) <= 30 else session.notes[:30] + "…"
                 extras.append(note)
@@ -203,6 +233,19 @@ class SessionsPage(QWidget):
 
         self._load_button.setEnabled(False)
         self._delete_button.setEnabled(False)
+
+    @staticmethod
+    def _list_cep(session: TrainingSession) -> str:
+        """CEP in this session's own default unit (mm when it has a scale)."""
+        ctx = unit_context(session)
+        unit = default_unit(ctx)
+        value = convert_length(session.cep_50, unit, ctx)
+        return f"{fmt_num(value, 0 if unit is LengthUnit.PX else 1)} {unit.value}"
+
+    def _on_unit_changed(self, unit: LengthUnit):
+        self._unit = LengthUnit(unit)
+        self._rebuild_trend_chart()
+        self._update_comparison()
 
     def _selected_ids(self) -> List[int]:
         return [item.data(Qt.ItemDataRole.UserRole) for item in self._list_widget.selectedItems()]
@@ -258,7 +301,7 @@ class SessionsPage(QWidget):
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Eksportuj liste sesji do CSV", "", "CSV (*.csv)",
+            self, "Eksportuj listę sesji do CSV", "", "CSV (*.csv)",
         )
         if not file_path:
             return
@@ -266,7 +309,7 @@ class SessionsPage(QWidget):
         try:
             export_sessions_list_to_csv(self._sessions, file_path)
         except Exception as error:
-            QMessageBox.critical(self, "Blad eksportu", str(error))
+            QMessageBox.critical(self, "Błąd eksportu", str(error))
 
     # ------------------------------------------------------------------
     # Comparison
@@ -276,6 +319,7 @@ class SessionsPage(QWidget):
         ids = self._selected_ids()
 
         if len(ids) != 2:
+            self._comparison_warning.hide()
             self._comparison_label.setText(
                 "Wybierz dokładnie dwie sesje na liście (Ctrl+klik), aby zobaczyć porównanie."
             )
@@ -283,21 +327,17 @@ class SessionsPage(QWidget):
 
         by_id = {session.id: session for session in self._visible_sessions}
         first, second = sorted((by_id[ids[0]], by_id[ids[1]]), key=lambda s: s.created_at)
-        delta = compare_sessions(first, second)
+        delta = compare_sessions(first, second, unit=self._unit)
 
+        self._comparison_warning.setText(delta["warning"] or "")
+        self._comparison_warning.setVisible(bool(delta["warning"]))
         self._comparison_label.setText(self._format_comparison(first, second, delta))
 
     @staticmethod
     def _format_comparison(first: TrainingSession, second: TrainingSession, comparison: dict) -> str:
-        def signed(value: float) -> str:
-            return f"{value:+.1f}"
-
         unit = comparison["unit"]
+        decimals = DECIMALS[LengthUnit(unit)]
         lines = []
-
-        if comparison["warning"]:
-            lines.append(f"⚠ {comparison['warning']}")
-            lines.append("")
 
         lines.append(f"{first.created_at:%Y-%m-%d %H:%M} → {second.created_at:%Y-%m-%d %H:%M}")
         lines.append("")
@@ -308,15 +348,16 @@ class SessionsPage(QWidget):
 
         for label, metric in (
             ("Celność (MPI od punktu celowania)", "accuracy_radius"),
-            ("Precyzja (śr. od MPI)", "precision_radius"),
+            ("Precyzja – śr. odległość od MPI (MRD)", "precision_radius"),
             ("CEP 50%", "cep_50"),
+            ("Rozrzut maks. (ES, środek–środek)", "extreme_spread"),
         ):
             first_value = comparison[f"{metric}_first"]
             second_value = comparison[f"{metric}_second"]
             delta_value = comparison[f"{metric}_delta"]
             lines.append(
-                f"{label}: {first_value:.1f} → {second_value:.1f} {unit} "
-                f"({signed(delta_value)} {unit})"
+                f"{label}: {fmt_num(first_value, decimals)} → {fmt_num(second_value, decimals)} {unit} "
+                f"({fmt_num(delta_value, decimals, signed=True)} {unit})"
             )
 
         return "\n".join(lines)
@@ -329,22 +370,24 @@ class SessionsPage(QWidget):
         while self._chart_container.count():
             item = self._chart_container.takeAt(0)
             if item.widget():
+                item.widget().hide()  # deleteLater() alone leaves it painted until the next loop pass
                 item.widget().deleteLater()
         self._chart_canvas = None
 
         if len(self._visible_sessions) < 2:
             placeholder = QLabel("Zapisz (lub odfiltruj) co najmniej dwie sesje, aby zobaczyć trend w czasie.")
             placeholder.setObjectName("mutedText")
+            placeholder.setWordWrap(True)
             self._chart_container.addWidget(placeholder)
             return
 
-        trend = build_trend_series(self._visible_sessions)
+        trend = build_trend_series(self._visible_sessions, unit=self._unit)
         unit = trend["unit"]
         points = trend["points"]
 
         if trend["warning"]:
-            warning_label = QLabel(f"⚠ {trend['warning']}")
-            warning_label.setObjectName("mutedText")
+            warning_label = QLabel(trend["warning"])
+            warning_label.setObjectName("warningText")
             warning_label.setWordWrap(True)
             self._chart_container.addWidget(warning_label)
 
@@ -354,14 +397,24 @@ class SessionsPage(QWidget):
         cep = [point["cep_50"] for point in points]
         accuracy = [point["accuracy_radius"] for point in points]
 
-        ax.plot(dates, cep, marker="o", color=TEAL, linewidth=1.8, label=f"CEP 50% ({unit})")
-        ax.plot(dates, accuracy, marker="o", color=ACCENT, linewidth=1.8,
+        ax.plot(dates, cep, marker="o", markersize=4, color=PRIMARY, linewidth=1.6,
+                label=f"CEP 50% ({unit})")
+        ax.plot(dates, accuracy, marker="o", markersize=4, color=SECONDARY, linewidth=1.6,
                 label=f"Celność - MPI od punktu celowania ({unit})")
 
         ax.set_ylabel(unit)
         ax.set_title("CEP 50% i celność w czasie", fontweight="bold")
-        ax.legend(fontsize=8, facecolor=BG, edgecolor=BORDER)
-        fig.autofmt_xdate()
+        ax.legend(fontsize=8, facecolor=BG, edgecolor=AXIS)
+        locator = mdates.AutoDateLocator()
+        ax.xaxis.set_major_locator(locator)
+        # Numeric, locale-independent date labels (no English month names).
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(
+            locator,
+            formats=["%Y", "%m.%Y", "%d.%m", "%H:%M", "%H:%M", "%S.%f"],
+            zero_formats=["", "%Y", "%m.%Y", "%d.%m", "%d.%m", "%H:%M"],
+            offset_formats=["", "%Y", "%Y-%m", "%Y-%m-%d", "%Y-%m-%d", "%Y-%m-%d %H:%M"],
+        ))
+        fig.tight_layout(pad=1.6)
 
         self._chart_canvas = Canvas(fig)
         self._chart_canvas.setMinimumHeight(220)
