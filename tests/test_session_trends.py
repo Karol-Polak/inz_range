@@ -177,3 +177,29 @@ def test_filter_sessions_excludes_sessions_without_a_match():
     a = _session(days_ago=1, weapon_type="Glock 17")
 
     assert filter_sessions([a], "AR-15") == []
+
+
+# ---------------------------------------------------------------------------
+# A stored scale of 0 means "no scale" (same rule as services.units)
+# ---------------------------------------------------------------------------
+
+def test_scale_warning_treats_zero_scale_as_missing():
+    a = _session(days_ago=1, scale_mm_per_px=0.5)
+    b = _session(days_ago=2, scale_mm_per_px=0.0)
+
+    assert scale_warning([a, b]) is not None
+
+
+def test_zero_scale_falls_back_to_px_without_none_values():
+    zero = _session(days_ago=5, cep_50=20.0, scale_mm_per_px=0.0)
+    scaled = _session(days_ago=1, cep_50=10.0, scale_mm_per_px=0.5)
+
+    comparison = compare_sessions(zero, scaled)
+    trend = build_trend_series([zero, scaled])
+
+    assert comparison["unit"] == "px" and comparison["warning"]
+    assert comparison["cep_50_delta"] == -10.0
+    assert trend["unit"] == "px" and trend["warning"]
+    assert [p["cep_50"] for p in trend["points"]] == [20.0, 10.0]
+    for point in trend["points"]:
+        assert all(value is not None for value in point.values())

@@ -82,9 +82,13 @@ class SettingsPage(QWidget):
         Skipped while a reference feature from the target catalogue is
         selected: the detector does not know WHICH feature it found (outer
         ring, black area, ...), so the px value must come from the 2-point
-        measurement of that same feature. "Własny wymiar…" keeps auto-fill.
+        measurement of that same feature. A new detection means a new photo,
+        so the px value left in the field belongs to the previous photo -
+        show the "zmierz go na zdjęciu" warning again. "Własny wymiar…"
+        keeps auto-fill and shows no warning.
         """
         if self._selected_preset() is not None:
+            self._set_awaiting_measurement(True)
             return
         self._set_px_programmatically(int(round(radius_px * 2)))
 

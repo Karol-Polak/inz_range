@@ -19,7 +19,7 @@ przypadkach dużo poniżej wyświetlanej dokładności (2 miejsca po przecinku).
 
 Rozrzut maksymalny (ES) przeliczamy tym samym wzorem atan(ES / D).
 Ściśle kąt, pod jakim widać odcinek ES, to 2*atan(ES / 2D); różnica jest
-rzędu (ES/D)^2 / 12 względnie, czyli również dużo poniżej wyświetlanej
+rzędu (ES/D)^2 / 4 względnie, czyli również dużo poniżej wyświetlanej
 dokładności.
 
 atan jest funkcją nieparzystą, więc wartości ze znakiem (średnie

@@ -40,7 +40,9 @@ def scale_warning(sessions: List[TrainingSession]) -> Optional[str]:
     None - każdą da się bezpiecznie przeliczyć do mm jej własną skalą.
     """
 
-    if any(session.scale_mm_per_px is None for session in sessions):
+    # Same rule as services.units: None or <= 0 means "no scale" - a stored 0
+    # must never reach convert_length (it would return None).
+    if any(not unit_context(session).has_scale for session in sessions):
         return (
             "Przynajmniej jedna z porównywanych sesji nie ma ustawionej "
             "skali kalibracji - wyniki pokazane w px."

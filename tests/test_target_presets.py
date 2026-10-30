@@ -264,3 +264,25 @@ def test_preset_change_applies_to_loaded_session_under_explicit_scale_rule(qapp,
         settings.get_scale_mm_per_px()
     )
     window.close()
+
+
+def test_new_detection_with_preset_shows_measure_warning_again(page):
+    _select_preset(page, "issf_25m_precision")
+    page.set_measured_pixel_distance(400.0)
+    assert not page._awaiting_measurement
+
+    page.set_detected_radius(809.0)  # new photo analysed
+
+    assert page._awaiting_measurement
+    assert not page._measure_warning.parentWidget().isHidden()
+    assert page._diameter_px.value() == 400  # previous value kept, not auto-filled
+
+
+def test_new_detection_with_custom_autofills_without_warning(page):
+    assert _custom_selected(page)
+
+    page.set_detected_radius(809.0)
+
+    assert page._diameter_px.value() == 1618
+    assert not page._awaiting_measurement
+    assert page._measure_warning.parentWidget().isHidden()
